@@ -1,5 +1,5 @@
 import gsap from 'gsap';
-import { colorForGlyph, lerp } from '../utils/colors';
+import { colorForGlyph } from '../utils/colors';
 import { applyMultiplyBlend, clearNeutral } from '../utils/canvas';
 import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
 import type { ModeController, ModeSnapshot } from './types';
@@ -10,12 +10,12 @@ export function createElasticLineMode(
   getSnap: () => ModeSnapshot,
 ): ModeController {
   let chars: string[] = [];
-  let xs: number[] = [];
-  let baselineY = 0;
+  let leftX: number[] = [];
   let widths: number[] = [];
+  let baselineY = 0;
   let layoutSig = '';
   let dragIdx = -1;
-  let pointerX = 0;
+  let grabOffset = 0;
   let tickerFn: (() => void) | null = null;
   let down: ((e: PointerEvent) => void) | null = null;
   let move: ((e: PointerEvent) => void) | null = null;
@@ -29,8 +29,9 @@ export function createElasticLineMode(
     const lays = layoutGlyphs(ctx, s.text, s.fontCss, s.fontSize, s.letterSpacing, ox, oy);
     chars = lays.map((g) => g.char);
     widths = lays.map((g) => g.w);
-    xs = lays.map((g) => g.x + g.w * 0.5);
+    leftX = lays.map((g) => g.x);
     baselineY = lays[0]?.baseline ?? oy;
+    dragIdx = -1;
   }
 
   function ensure() {
@@ -42,98 +43,71 @@ export function createElasticLineMode(
     }
   }
 
-  function relax() {
-    const s = getSnap();
-    const k = s.visual.elastic.springK * s.visual.elastic.damping * (s.animationEnabled ? 1 : 0.75);
-    const nx = xs.slice();
-    for (let i = 0; i < xs.length; i++) {
-      if (i === dragIdx) continue;
-      const left = i > 0 ? xs[i - 1]! : xs[i]!;
-      const right = i < xs.length - 1 ? xs[i + 1]! : xs[i]!;
-      const target = (left + right) * 0.5;
-      nx[i] = lerp(xs[i]!, target, k);
+  function hit(px: number): number {
+    for (let i = 0; i < leftX.length; i++) {
+      const L = leftX[i]!;
+      const R = L + widths[i]!;
+      if (px >= L && px <= R) return i;
     }
-    if (dragIdx >= 0) nx[dragIdx] = pointerX;
-    for (let i = 0; i < xs.length; i++) xs[i] = nx[i]!;
+    return -1;
   }
 
-  function copiesAlongDrag(): { x: number; y: number; a: number }[] {
+  function gapFills(dr: number): { x: number; a: number; ch: string }[] {
     const s = getSnap();
-    if (dragIdx < 0 || chars.length === 0) return [];
-    const w = widths[dragIdx] ?? s.fontSize * 0.5;
-    const spacing = Math.max(6, w * s.visual.elastic.copySpacing);
-    const out: { x: number; y: number; a: number }[] = [];
-    const i0 = Math.max(0, dragIdx - 1);
-    const i1 = Math.min(chars.length - 1, dragIdx + 1);
-    const x0 = xs[i0]!;
-    const x1 = xs[i1]!;
-    const xm = xs[dragIdx]!;
-    const total = Math.abs(xm - x0) + Math.abs(x1 - xm);
-    if (total < spacing * 1.2) return out;
-    const walk = (xa: number, xb: number) => {
-      const dir = Math.sign(xb - xa) || 1;
-      let t = xa + dir * spacing * 0.5;
-      const end = xb - dir * spacing * 0.35;
-      while (dir > 0 ? t < end : t > end) {
-        out.push({ x: t, y: baselineY, a: 0.22 });
-        t += dir * spacing;
+    if (dr < 0 || dr >= chars.length) return [];
+    const ch = chars[dr]!;
+    const sp = Math.max(5, (widths[dr] ?? s.fontSize * 0.5) * s.visual.elastic.fillSpacing);
+    const out: { x: number; a: number; ch: string }[] = [];
+    const run = (edgeA: number, edgeB: number) => {
+      const lo = Math.min(edgeA, edgeB);
+      const hi = Math.max(edgeA, edgeB);
+      let x = lo + sp * 0.45;
+      while (x < hi - sp * 0.35) {
+        out.push({ x, a: 0.2, ch });
+        x += sp;
       }
     };
-    walk(x0, xm);
-    walk(xm, x1);
+    if (dr > 0) run(leftX[dr - 1]! + widths[dr - 1]!, leftX[dr]!);
+    if (dr < chars.length - 1) run(leftX[dr]! + widths[dr]!, leftX[dr + 1]!);
     return out;
   }
 
   function tick() {
     const s = getSnap();
     ensure();
-    for (let k = 0; k < 4; k++) relax();
     clearNeutral(ctx, s.w, s.h);
     applyMultiplyBlend(ctx, s.visual.multiplyBlend);
 
-    const extras = copiesAlongDrag();
+    const fills = dragIdx >= 0 ? gapFills(dragIdx) : [];
+
     ctx.save();
     ctx.font = s.fontCss;
     ctx.textBaseline = 'alphabetic';
     ctx.textAlign = 'center';
-    for (const e of extras) {
-      ctx.globalAlpha = e.a;
+    for (const f of fills) {
+      ctx.globalAlpha = f.a;
       ctx.fillStyle = colorForGlyph({
         mode: s.visual.colorMode,
         monochrome: s.visual.monochromeColor,
         seed: s.visual.rainbowSeed,
-        index: 0,
-        total: 1,
+        index: 1,
+        total: 3,
       });
-      ctx.fillText(chars[dragIdx]!, e.x, e.y);
+      ctx.fillText(f.ch, f.x, baselineY);
     }
     ctx.globalAlpha = 1;
+    ctx.textAlign = 'left';
     for (let i = 0; i < chars.length; i++) {
-      const fill = colorForGlyph({
+      ctx.fillStyle = colorForGlyph({
         mode: s.visual.colorMode,
         monochrome: s.visual.monochromeColor,
         seed: s.visual.rainbowSeed,
         index: i,
         total: chars.length,
       });
-      ctx.fillStyle = fill;
-      const jitter = s.animationEnabled ? Math.sin(performance.now() * 0.001 + i) * 0.4 : 0;
-      ctx.fillText(chars[i]!, xs[i]! - widths[i]! * 0.5 + jitter, baselineY);
+      ctx.fillText(chars[i]!, leftX[i]!, baselineY);
     }
     ctx.restore();
-  }
-
-  function nearestIndex(px: number): number {
-    let best = 0;
-    let bd = Infinity;
-    for (let i = 0; i < xs.length; i++) {
-      const d = Math.abs(xs[i]! - px);
-      if (d < bd) {
-        bd = d;
-        best = i;
-      }
-    }
-    return best;
   }
 
   return {
@@ -142,15 +116,18 @@ export function createElasticLineMode(
       tickerFn = () => tick();
       gsap.ticker.add(tickerFn);
       down = (e: PointerEvent) => {
+        if (getSnap().visual.sceneFrozen) return;
         const r = canvas.getBoundingClientRect();
-        pointerX = e.clientX - r.left;
-        dragIdx = nearestIndex(pointerX);
+        const px = e.clientX - r.left;
+        dragIdx = hit(px);
+        if (dragIdx >= 0) grabOffset = px - leftX[dragIdx]!;
         canvas.setPointerCapture(e.pointerId);
       };
       move = (e: PointerEvent) => {
-        if (dragIdx < 0) return;
+        if (dragIdx < 0 || getSnap().visual.sceneFrozen) return;
         const r = canvas.getBoundingClientRect();
-        pointerX = e.clientX - r.left;
+        const px = e.clientX - r.left;
+        leftX[dragIdx] = px - grabOffset;
       };
       up = () => {
         dragIdx = -1;

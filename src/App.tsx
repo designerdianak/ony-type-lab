@@ -1,20 +1,20 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { FONT_FAMILIES, getFontFamilyById } from '../config/fontRegistry';
-import { useFontLoader } from '../hooks/useFontLoader';
-import { useOpenTypeFont } from '../hooks/useOpenTypeFont';
+import { FONT_FAMILIES, getFontFamilyById } from './config/fontRegistry';
+import { useFontLoader } from './hooks/useFontLoader';
+import { useOpenTypeFont } from './hooks/useOpenTypeFont';
 import {
   DEFAULT_PLAYGROUND_VISUAL,
   LAB_MODES,
   type LabModeId,
   type PlaygroundVisualState,
-} from '../types/playground';
-import { buildCanvasFont, layoutGlyphs, measureLineWidth } from '../utils/textLayout';
-import { exportCanvasPng } from '../utils/exportPng';
-import { downloadTextFile, exportStaticSvg } from '../utils/exportSvg';
-import { LabeledSlider } from './ui/LabeledSlider';
-import { RoundButton } from './ui/RoundButton';
-import { RoundToggle } from './ui/RoundToggle';
-import { PlaygroundCanvas } from './playground/PlaygroundCanvas';
+} from './types/playground';
+import { buildCanvasFont, layoutGlyphs, measureLineWidth } from './utils/textLayout';
+import { exportCanvasPng } from './utils/exportPng';
+import { downloadTextFile, exportStaticSvg } from './utils/exportSvg';
+import { LabeledSlider } from './components/ui/LabeledSlider';
+import { RoundButton } from './components/ui/RoundButton';
+import { RoundToggle } from './components/ui/RoundToggle';
+import { PlaygroundCanvas } from './components/playground/PlaygroundCanvas';
 
 const DEFAULT_FAMILY = FONT_FAMILIES[0]?.id ?? 'ony-byte';
 const DEFAULT_WEIGHT =
@@ -25,17 +25,17 @@ const DEFAULT_WEIGHT =
 function modeHint(mode: LabModeId): string {
   switch (mode) {
     case 'expansion':
-      return 'Клик по букве — клоны и уплотнение';
+      return 'Клик — клоны. «Стоп» — зафиксировать кадр для PNG';
     case 'bloom':
-      return 'Удерживайте кисть над холстом';
+      return 'Кисть толкает буквы; отпускание — возврат. Стоп — фиксация';
     case 'assembly':
-      return 'Сборка и пиксельный дрейф';
+      return 'Копии слетают к буквам (preset 2). Стоп — фиксация';
     case 'symbol':
-      return 'Клик или постоянный оверлей';
+      return 'Оверлей цифр/знаков из шрифта. Стоп — заморозить кадр';
     case 'elastic':
-      return 'Тяните букву по линии';
+      return 'Тяни букву — она остаётся; зазоры заполняются её копиями';
     case 'softBody':
-      return 'Мягкие глифы и столкновения';
+      return 'Клик по холсту — буквы по очереди падают (псевдо‑3D)';
     default:
       return '';
   }
@@ -71,7 +71,7 @@ export default function App() {
 
   const resetAll = () => {
     setText(DEFAULT_PLAYGROUND_VISUAL.text);
-    setVisual(DEFAULT_PLAYGROUND_VISUAL);
+    setVisual({ ...DEFAULT_PLAYGROUND_VISUAL });
     setFamilyId(DEFAULT_FAMILY);
     setWeightId(DEFAULT_WEIGHT);
     setMode('bloom');
@@ -200,6 +200,11 @@ export default function App() {
             pressed={visual.multiplyBlend}
             onChange={(v) => setVisual((s) => ({ ...s, multiplyBlend: v }))}
           />
+          <RoundToggle
+            label="Стоп (экспорт)"
+            pressed={visual.sceneFrozen}
+            onChange={(v) => setVisual((s) => ({ ...s, sceneFrozen: v }))}
+          />
         </div>
 
         <div className="lab__section-title">Цвет</div>
@@ -266,6 +271,17 @@ export default function App() {
                 setVisual((s) => ({ ...s, expansion: { ...s.expansion, collisionSpacing: v } }))
               }
             />
+            <LabeledSlider
+              label="Толчок при столкновении"
+              min={0.1}
+              max={1.2}
+              step={0.02}
+              value={visual.expansion.collisionImpulse}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) =>
+                setVisual((s) => ({ ...s, expansion: { ...s.expansion, collisionImpulse: v } }))
+              }
+            />
             <div className="lab__row">
               <RoundToggle
                 label="Auto grow"
@@ -314,6 +330,42 @@ export default function App() {
               format={(n) => n.toFixed(2)}
               onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, motionIntensity: v } }))}
             />
+            <LabeledSlider
+              label="Плотность фигур"
+              min={0}
+              max={1}
+              step={0.02}
+              value={visual.bloom.figureDensity}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, figureDensity: v } }))}
+            />
+            <LabeledSlider
+              label="Растительное качание"
+              min={0}
+              max={1}
+              step={0.02}
+              value={visual.bloom.plantOrganic}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, plantOrganic: v } }))}
+            />
+            <LabeledSlider
+              label="Возврат букв"
+              min={0.02}
+              max={0.35}
+              step={0.01}
+              value={visual.bloom.letterReturn}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, letterReturn: v } }))}
+            />
+            <LabeledSlider
+              label="Скорость угасания графики"
+              min={0}
+              max={1}
+              step={0.02}
+              value={visual.bloom.graphicFade}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, graphicFade: v } }))}
+            />
             <div className="lab__row">
               <RoundToggle
                 label="Blur"
@@ -331,6 +383,32 @@ export default function App() {
 
         {mode === 'assembly' && (
           <>
+            <LabeledSlider
+              label="Копий к букве"
+              min={4}
+              max={24}
+              step={1}
+              value={visual.assembly.inwardCopies}
+              onChange={(v) => setVisual((s) => ({ ...s, assembly: { ...s.assembly, inwardCopies: v } }))}
+            />
+            <LabeledSlider
+              label="Радиус орбиты"
+              min={0.4}
+              max={2.2}
+              step={0.02}
+              value={visual.assembly.orbitRadius}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) => setVisual((s) => ({ ...s, assembly: { ...s.assembly, orbitRadius: v } }))}
+            />
+            <LabeledSlider
+              label="Скорость слияния"
+              min={0.006}
+              max={0.045}
+              step={0.001}
+              value={visual.assembly.mergeSpeed}
+              format={(n) => n.toFixed(3)}
+              onChange={(v) => setVisual((s) => ({ ...s, assembly: { ...s.assembly, mergeSpeed: v } }))}
+            />
             <LabeledSlider
               label="Pixel jump"
               min={1}
@@ -384,43 +462,46 @@ export default function App() {
               format={(n) => n.toFixed(2)}
               onChange={(v) => setVisual((s) => ({ ...s, symbol: { ...s.symbol, symbolDensity: v } }))}
             />
+            <LabeledSlider
+              label="Смена каждые N кадров"
+              min={6}
+              max={60}
+              value={visual.symbol.swapEveryFrames}
+              onChange={(v) => setVisual((s) => ({ ...s, symbol: { ...s.symbol, swapEveryFrames: v } }))}
+            />
           </>
         )}
 
         {mode === 'elastic' && (
           <>
             <LabeledSlider
-              label="Spring"
-              min={0.04}
-              max={0.42}
-              step={0.005}
-              value={visual.elastic.springK}
-              format={(n) => n.toFixed(3)}
-              onChange={(v) => setVisual((s) => ({ ...s, elastic: { ...s.elastic, springK: v } }))}
-            />
-            <LabeledSlider
-              label="Damping feel"
-              min={0.5}
-              max={0.98}
+              label="Шаг копий в зазоре"
+              min={0.22}
+              max={1.05}
               step={0.01}
-              value={visual.elastic.damping}
+              value={visual.elastic.fillSpacing}
               format={(n) => n.toFixed(2)}
-              onChange={(v) => setVisual((s) => ({ ...s, elastic: { ...s.elastic, damping: v } }))}
-            />
-            <LabeledSlider
-              label="Copy spacing"
-              min={0.25}
-              max={1.1}
-              step={0.01}
-              value={visual.elastic.copySpacing}
-              format={(n) => n.toFixed(2)}
-              onChange={(v) => setVisual((s) => ({ ...s, elastic: { ...s.elastic, copySpacing: v } }))}
+              onChange={(v) => setVisual((s) => ({ ...s, elastic: { ...s.elastic, fillSpacing: v } }))}
             />
           </>
         )}
 
         {mode === 'softBody' && (
           <>
+            <div className="lab__row">
+              <RoundButton
+                active={visual.softBody.look === 'metallic'}
+                onClick={() => setVisual((s) => ({ ...s, softBody: { ...s.softBody, look: 'metallic' } }))}
+              >
+                Metallic
+              </RoundButton>
+              <RoundButton
+                active={visual.softBody.look === 'matte'}
+                onClick={() => setVisual((s) => ({ ...s, softBody: { ...s.softBody, look: 'matte' } }))}
+              >
+                Matte
+              </RoundButton>
+            </div>
             <div className="lab__row">
               <RoundToggle
                 label="Gravity"

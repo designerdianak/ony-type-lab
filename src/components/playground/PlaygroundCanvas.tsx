@@ -1,10 +1,10 @@
 import { useEffect, useRef } from 'react';
 import type opentype from 'opentype.js';
-import { createModeController } from '../modes/factory';
-import type { ModeSnapshot } from '../modes/types';
-import type { LabModeId } from '../types/playground';
-import type { PlaygroundVisualState } from '../types/playground';
-import { setupHiDpiCanvas } from '../utils/canvas';
+import { createModeController } from '../../modes/factory';
+import type { ModeSnapshot } from '../../modes/types';
+import type { LabModeId } from '../../types/playground';
+import type { PlaygroundVisualState } from '../../types/playground';
+import { setupHiDpiCanvas } from '../../utils/canvas';
 
 export type PlaygroundCanvasProps = {
   mode: LabModeId;

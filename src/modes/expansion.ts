@@ -83,6 +83,7 @@ export function createExpansionMode(
 
   function cloneFrom(idx: number, px: number, py: number) {
     const s = getSnap();
+    if (s.visual.sceneFrozen) return;
     const base = ents[idx]!;
     const amt = Math.max(1, Math.round(s.visual.expansion.cloneAmount));
     for (let k = 0; k < amt; k++) {
@@ -101,13 +102,13 @@ export function createExpansionMode(
         hy: base.hy,
       });
     }
-    const push = s.visual.expansion.spreadForce * 8;
+    const push = s.visual.expansion.spreadForce * 10;
     for (const e of ents) {
       const dx = e.x - px;
       const dy = e.y - py;
       const d = Math.hypot(dx, dy) + 0.01;
-      e.vx += (dx / d) * push * 0.06;
-      e.vy += (dy / d) * push * 0.06;
+      e.vx += (dx / d) * push * 0.08;
+      e.vy += (dy / d) * push * 0.08;
     }
   }
 
@@ -121,6 +122,8 @@ export function createExpansionMode(
     const n = ents.length;
     if (n === 0) return;
 
+    const frozen = s.visual.sceneFrozen;
+
     const xs = new Float32Array(n);
     const ys = new Float32Array(n);
     const rs = new Float32Array(n);
@@ -129,24 +132,44 @@ export function createExpansionMode(
       ys[i] = ents[i]!.y;
       rs[i] = ents[i]!.r;
     }
-    separateDiscs(xs, ys, rs, sets.collisionSpacing, 4);
+    const impulse = 0.18 + sets.collisionImpulse * 0.55;
+    separateDiscs(xs, ys, rs, sets.collisionSpacing, 7);
 
-    for (let i = 0; i < n; i++) {
-      const e = ents[i]!;
-      const tx = xs[i]!;
-      const ty = ys[i]!;
-      e.vx = lerp(e.vx, (tx - e.x) * sets.spreadForce * 0.35, 0.22);
-      e.vy = lerp(e.vy, (ty - e.y) * sets.spreadForce * 0.35, 0.22);
-      e.vx += (e.hx - e.x) * 0.0008;
-      e.vy += (e.hy - e.y) * 0.0012;
-      if (s.animationEnabled) {
-        e.vx += Math.sin(performance.now() * 0.0007 + i) * 0.02;
-        e.vy += Math.cos(performance.now() * 0.0006 + i * 0.7) * 0.015;
+    if (!frozen) {
+      for (let i = 0; i < n; i++) {
+        const e = ents[i]!;
+        const ox = xs[i]! - e.x;
+        const oy = ys[i]! - e.y;
+        e.vx += ox * impulse;
+        e.vy += oy * impulse;
       }
-      e.x += e.vx;
-      e.y += e.vy;
-      e.vx *= 0.9;
-      e.vy *= 0.9;
+
+      for (let i = 0; i < n; i++) {
+        const e = ents[i]!;
+        const tx = xs[i]!;
+        const ty = ys[i]!;
+        e.vx = lerp(e.vx, (tx - e.x) * sets.spreadForce * 0.28, 0.18);
+        e.vy = lerp(e.vy, (ty - e.y) * sets.spreadForce * 0.28, 0.18);
+        e.vx += (e.hx - e.x) * 0.00055;
+        e.vy += (e.hy - e.y) * 0.0009;
+        if (s.animationEnabled) {
+          e.vx += Math.sin(performance.now() * 0.00055 + i) * 0.012;
+          e.vy += Math.cos(performance.now() * 0.0005 + i * 0.7) * 0.01;
+        }
+        e.x += e.vx;
+        e.y += e.vy;
+        e.vx *= 0.915;
+        e.vy *= 0.915;
+      }
+
+      if (sets.autoGrow && s.animationEnabled) {
+        autoTimer += 1;
+        if (autoTimer > 220 && ents.length > 0) {
+          autoTimer = 0;
+          const idx = Math.floor(Math.random() * ents.length);
+          cloneFrom(idx, s.w * 0.5, s.h * 0.5);
+        }
+      }
     }
 
     ctx.save();
@@ -166,15 +189,6 @@ export function createExpansionMode(
       ctx.fillText(e.char, e.x, e.y);
     }
     ctx.restore();
-
-    if (sets.autoGrow && s.animationEnabled) {
-      autoTimer += 1;
-      if (autoTimer > 220 && ents.length > 0) {
-        autoTimer = 0;
-        const idx = Math.floor(Math.random() * ents.length);
-        cloneFrom(idx, s.w * 0.5, s.h * 0.5);
-      }
-    }
   }
 
   return {

@@ -4,27 +4,27 @@ import { applyMultiplyBlend, clearNeutral } from '../utils/canvas';
 import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
 import type { ModeController, ModeSnapshot } from './types';
 
-type G = {
+type Slot = {
   char: string;
-  x: number;
-  y: number;
   tx: number;
   ty: number;
-  jx: number;
-  jy: number;
   w: number;
   h: number;
+  merge: number;
+  ghostAngles: number[];
+  ghostRadius: number[];
+  jx: number;
+  jy: number;
 };
 
 export function createAssemblyMode(
-  canvas: HTMLCanvasElement,
+  _canvas: HTMLCanvasElement,
   ctx: CanvasRenderingContext2D,
   getSnap: () => ModeSnapshot,
 ): ModeController {
-  let glyphs: G[] = [];
+  let slots: Slot[] = [];
   let layoutSig = '';
   let tickerFn: (() => void) | null = null;
-  let enterTl: gsap.core.Timeline | null = null;
   let jumpAcc = 0;
 
   function rebuild() {
@@ -35,36 +35,32 @@ export function createAssemblyMode(
     const baseOx = (s.w - tw) * 0.5;
     const oy = s.h * 0.55;
     const lays = layoutGlyphs(ctx, s.text, s.fontCss, s.fontSize, letter, baseOx, oy);
-    glyphs = lays.map((g) => ({
-      char: g.char,
-      x: Math.random() * s.w,
-      y: -80 - Math.random() * 120,
-      tx: g.x,
-      ty: g.baseline,
-      jx: 0,
-      jy: 0,
-      w: g.w,
-      h: g.h,
-    }));
-    enterTl?.kill();
-    enterTl = gsap.timeline({ defaults: { ease: 'power3.inOut' } });
-    glyphs.forEach((g, i) => {
-      enterTl!.to(
-        g,
-        {
-          x: g.tx,
-          y: g.ty,
-          duration: 1.35,
-          delay: i * 0.04,
-        },
-        0,
-      );
+    const copies = Math.max(4, Math.min(28, Math.round(s.visual.assembly.inwardCopies)));
+    slots = lays.map((g) => {
+      const angles: number[] = [];
+      const radii: number[] = [];
+      for (let k = 0; k < copies; k++) {
+        angles.push((k / copies) * Math.PI * 2 + Math.random() * 0.4);
+        radii.push((0.35 + Math.random() * 0.65) * s.fontSize * s.visual.assembly.orbitRadius * 2.2);
+      }
+      return {
+        char: g.char,
+        tx: g.x,
+        ty: g.baseline,
+        w: g.w,
+        h: g.h,
+        merge: 0,
+        ghostAngles: angles,
+        ghostRadius: radii,
+        jx: 0,
+        jy: 0,
+      };
     });
   }
 
   function ensure() {
     const s = getSnap();
-    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${s.w}|${s.h}|${s.visual.assembly.overlap}`;
+    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${s.w}|${s.h}|${s.visual.assembly.overlap}|${s.visual.assembly.inwardCopies}|${s.visual.assembly.orbitRadius}`;
     if (sig !== layoutSig) {
       layoutSig = sig;
       rebuild();
@@ -77,35 +73,69 @@ export function createAssemblyMode(
     clearNeutral(ctx, s.w, s.h);
     applyMultiplyBlend(ctx, s.visual.multiplyBlend);
 
-    const grid = Math.max(1, s.visual.assembly.pixelJump);
-    jumpAcc += s.animationEnabled ? 1 : 0.25;
-    if (jumpAcc > 10) {
-      jumpAcc = 0;
-      const drift = s.visual.assembly.drift * grid * 4;
-      for (const g of glyphs) {
-        if (!s.animationEnabled) continue;
-        g.jx = Math.round((Math.random() - 0.5) * drift / grid) * grid;
-        g.jy = Math.round((Math.random() - 0.5) * drift * 0.6 / grid) * grid;
+    const frozen = s.visual.sceneFrozen;
+    const spd = s.visual.assembly.mergeSpeed * (s.animationEnabled ? 1.1 : 0.55);
+    if (!frozen) {
+      for (const sl of slots) {
+        sl.merge = Math.min(1, sl.merge + spd);
       }
+    }
+
+    const grid = Math.max(1, s.visual.assembly.pixelJump);
+    const allMerged = slots.length > 0 && slots.every((sl) => sl.merge >= 0.98);
+    if (!frozen && allMerged) {
+      for (const sl of slots) {
+        sl.jx = lerp(sl.jx, 0, 0.14);
+        sl.jy = lerp(sl.jy, 0, 0.14);
+      }
+      if (s.animationEnabled) {
+        jumpAcc += 1;
+        if (jumpAcc > 14) {
+          jumpAcc = 0;
+          const drift = s.visual.assembly.drift * grid * 4;
+          for (const sl of slots) {
+            sl.jx = Math.round((Math.random() - 0.5) * drift / grid) * grid;
+            sl.jy = Math.round((Math.random() - 0.5) * drift * 0.55 / grid) * grid;
+          }
+        }
+      }
+    } else if (!allMerged) {
+      jumpAcc = 0;
     }
 
     ctx.save();
     ctx.font = s.fontCss;
     ctx.textBaseline = 'alphabetic';
-    for (let i = 0; i < glyphs.length; i++) {
-      const g = glyphs[i]!;
-      const pull = s.animationEnabled ? 0.18 : 0.32;
-      g.jx = lerp(g.jx, 0, pull);
-      g.jy = lerp(g.jy, 0, pull);
-      const fill = colorForGlyph({
+    const copies = slots[0]?.ghostAngles.length ?? 0;
+    for (let i = 0; i < slots.length; i++) {
+      const sl = slots[i]!;
+      const ease = 1 - Math.pow(1 - sl.merge, 2.4);
+      const stagger = i * 0.022;
+      const me = Math.max(0, Math.min(1, (ease - stagger) / Math.max(0.12, 1 - stagger)));
+      for (let k = 0; k < copies; k++) {
+        const ang = sl.ghostAngles[k]!;
+        const R = sl.ghostRadius[k]! * (1 - me);
+        const gx = sl.tx + Math.cos(ang + sl.merge * 1.1) * R;
+        const gy = sl.ty + Math.sin(ang + sl.merge * 0.9) * R * 0.38 - R * 0.15 * (1 - me);
+        ctx.globalAlpha = 0.12 + 0.32 * (1 - me);
+        ctx.fillStyle = colorForGlyph({
+          mode: s.visual.colorMode,
+          monochrome: s.visual.monochromeColor,
+          seed: s.visual.rainbowSeed,
+          index: i + k,
+          total: slots.length + copies,
+        });
+        ctx.fillText(sl.char, gx, gy);
+      }
+      ctx.globalAlpha = 0.2 + 0.8 * me;
+      ctx.fillStyle = colorForGlyph({
         mode: s.visual.colorMode,
         monochrome: s.visual.monochromeColor,
         seed: s.visual.rainbowSeed,
         index: i,
-        total: glyphs.length,
+        total: slots.length,
       });
-      ctx.fillStyle = fill;
-      ctx.fillText(g.char, g.x + g.jx, g.y + g.jy);
+      ctx.fillText(sl.char, sl.tx + sl.jx, sl.ty + sl.jy);
     }
     ctx.restore();
   }
@@ -119,8 +149,6 @@ export function createAssemblyMode(
     stop() {
       if (tickerFn) gsap.ticker.remove(tickerFn);
       tickerFn = null;
-      enterTl?.kill();
-      enterTl = null;
     },
     dispose() {
       this.stop();

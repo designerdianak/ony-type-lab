@@ -4,7 +4,8 @@ import { applyMultiplyBlend, clearNeutral } from '../utils/canvas';
 import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
 import type { ModeController, ModeSnapshot } from './types';
 
-const SYMBOLS = ['◇', '○', '△', '✦', '⊕', '⊗', '∞', '⌁', '⌘', '◈'];
+/** Символы из «набора шрифта» — цифры и пунктуация для оверлея */
+const GLYPH_OVERLAY_POOL = '0123456789?!@#%&*+-=:/§|\\<>[]{}';
 
 type G = {
   char: string;
@@ -26,6 +27,11 @@ export function createSymbolOverlayMode(
   let layoutSig = '';
   let tickerFn: (() => void) | null = null;
   let clickHandler: ((e: MouseEvent) => void) | null = null;
+  let frame = 0;
+
+  function pickSym() {
+    return GLYPH_OVERLAY_POOL[Math.floor(Math.random() * GLYPH_OVERLAY_POOL.length)]!;
+  }
 
   function rebuild() {
     const s = getSnap();
@@ -40,7 +46,7 @@ export function createSymbolOverlayMode(
       w: g.w,
       h: g.h,
       active: s.visual.symbol.interaction === 'alwaysOn' ? 1 : 0,
-      sym: SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)]!,
+      sym: pickSym(),
       rot: Math.random() * Math.PI,
     }));
   }
@@ -55,12 +61,11 @@ export function createSymbolOverlayMode(
   }
 
   function hit(px: number, py: number): number {
-    let best = -1;
     for (let i = 0; i < glyphs.length; i++) {
       const g = glyphs[i]!;
-      if (px >= g.x && px <= g.x + g.w && py >= g.bl - g.h && py <= g.bl + 8) best = i;
+      if (px >= g.x && px <= g.x + g.w && py >= g.bl - g.h && py <= g.bl + 8) return i;
     }
-    return best;
+    return -1;
   }
 
   function tick() {
@@ -70,6 +75,17 @@ export function createSymbolOverlayMode(
     applyMultiplyBlend(ctx, s.visual.multiplyBlend);
     const t = performance.now();
     const always = s.visual.symbol.interaction === 'alwaysOn';
+    const frozen = s.visual.sceneFrozen;
+
+    if (!frozen) {
+      frame += 1;
+      const every = Math.max(4, Math.round(s.visual.symbol.swapEveryFrames));
+      if (frame % every === 0) {
+        for (const g of glyphs) {
+          if (always || g.active > 0.2) g.sym = pickSym();
+        }
+      }
+    }
 
     ctx.save();
     ctx.font = s.fontCss;
@@ -87,7 +103,6 @@ export function createSymbolOverlayMode(
             })
           : '#0a0a0a';
       if (!always && g.active > 0 && g.active < 1) g.active = Math.min(1, g.active + 0.08);
-      ctx.globalAlpha = 1;
       ctx.fillStyle = fill;
       ctx.fillText(g.char, g.x, g.bl);
     }
@@ -96,24 +111,21 @@ export function createSymbolOverlayMode(
     ctx.save();
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'center';
-    const symSize = Math.max(10, s.fontSize * 0.22 * s.visual.symbol.symbolDensity);
-      const famMatch = /"([^"]+)"/.exec(s.fontCss);
-      const fam = famMatch?.[1] ?? 'ONYByteLab';
-      ctx.font = `${symSize}px "${fam}"`;
+    const symSize = Math.max(10, s.fontSize * 0.26 * s.visual.symbol.symbolDensity);
+    const famMatch = /"([^"]+)"/.exec(s.fontCss);
+    const fam = famMatch?.[1] ?? 'ONYByteLab';
+    ctx.font = `${symSize}px "${fam}"`;
     for (let i = 0; i < glyphs.length; i++) {
       const g = glyphs[i]!;
       const on = always || g.active > 0.2;
       if (!on) continue;
-      g.rot += 0.003 * (s.animationEnabled ? 1 : 0.2);
-      if (Math.random() < 0.002 * s.visual.symbol.symbolDensity) {
-        g.sym = SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)]!;
-      }
+      if (!frozen) g.rot += 0.0028 * (s.animationEnabled ? 1 : 0.15);
       const cx = g.x + g.w * 0.5;
-      const cy = g.bl - g.h * 0.55 + Math.sin(t * 0.001 + i) * 3;
+      const cy = g.bl - g.h * 0.52 + Math.sin(t * 0.00085 + i) * 2.5;
       ctx.save();
       ctx.translate(cx, cy);
       ctx.rotate(g.rot);
-      ctx.globalAlpha = 0.28;
+      ctx.globalAlpha = 0.22;
       ctx.fillStyle = colorForGlyph({
         mode: s.visual.colorMode,
         monochrome: s.visual.monochromeColor,
@@ -130,6 +142,7 @@ export function createSymbolOverlayMode(
   return {
     start() {
       layoutSig = '';
+      frame = 0;
       tickerFn = () => tick();
       gsap.ticker.add(tickerFn);
       clickHandler = (ev: MouseEvent) => {
