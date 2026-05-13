@@ -86,29 +86,31 @@ export function createExpansionMode(
     if (s.visual.sceneFrozen) return;
     const base = ents[idx]!;
     const amt = Math.max(1, Math.round(s.visual.expansion.cloneAmount));
+    /** Плотный «сгусток» как на референсе: почти в одной точке, сразу давит на соседей */
     for (let k = 0; k < amt; k++) {
-      const ang = Math.random() * Math.PI * 2;
-      const dist = 2 + Math.random() * 10;
+      const ang = (k / Math.max(1, amt)) * Math.PI * 2 + Math.random() * 0.35;
+      const dist = 0.15 + Math.random() * 2.2;
       const nx = base.x + Math.cos(ang) * dist;
       const ny = base.y + Math.sin(ang) * dist;
+      const burst = s.visual.expansion.spreadForce * (9 + Math.random() * 5);
       ents.push({
         char: base.char,
         x: nx,
         y: ny,
-        vx: Math.cos(ang) * s.visual.expansion.spreadForce * 6,
-        vy: Math.sin(ang) * s.visual.expansion.spreadForce * 6,
+        vx: Math.cos(ang) * burst,
+        vy: Math.sin(ang) * burst,
         r: base.r,
-        hx: base.hx + (Math.random() - 0.5) * 4,
+        hx: base.hx + (Math.random() - 0.5) * 2,
         hy: base.hy,
       });
     }
-    const push = s.visual.expansion.spreadForce * 10;
+    const push = s.visual.expansion.spreadForce * 14;
     for (const e of ents) {
       const dx = e.x - px;
       const dy = e.y - py;
       const d = Math.hypot(dx, dy) + 0.01;
-      e.vx += (dx / d) * push * 0.08;
-      e.vy += (dy / d) * push * 0.08;
+      e.vx += (dx / d) * push * 0.11;
+      e.vy += (dy / d) * push * 0.11;
     }
   }
 
@@ -132,8 +134,9 @@ export function createExpansionMode(
       ys[i] = ents[i]!.y;
       rs[i] = ents[i]!.r;
     }
-    const impulse = 0.18 + sets.collisionImpulse * 0.55;
-    separateDiscs(xs, ys, rs, sets.collisionSpacing, 7);
+    const impulse = 0.22 + sets.collisionImpulse * 0.62;
+    separateDiscs(xs, ys, rs, sets.collisionSpacing, 10);
+    separateDiscs(xs, ys, rs, sets.collisionSpacing, 6);
 
     if (!frozen) {
       for (let i = 0; i < n; i++) {
@@ -148,18 +151,18 @@ export function createExpansionMode(
         const e = ents[i]!;
         const tx = xs[i]!;
         const ty = ys[i]!;
-        e.vx = lerp(e.vx, (tx - e.x) * sets.spreadForce * 0.28, 0.18);
-        e.vy = lerp(e.vy, (ty - e.y) * sets.spreadForce * 0.28, 0.18);
-        e.vx += (e.hx - e.x) * 0.00055;
-        e.vy += (e.hy - e.y) * 0.0009;
+        e.vx = lerp(e.vx, (tx - e.x) * sets.spreadForce * 0.32, 0.2);
+        e.vy = lerp(e.vy, (ty - e.y) * sets.spreadForce * 0.32, 0.2);
+        e.vx += (e.hx - e.x) * 0.00045;
+        e.vy += (e.hy - e.y) * 0.00075;
         if (s.animationEnabled) {
-          e.vx += Math.sin(performance.now() * 0.00055 + i) * 0.012;
-          e.vy += Math.cos(performance.now() * 0.0005 + i * 0.7) * 0.01;
+          e.vx += Math.sin(performance.now() * 0.0005 + i) * 0.008;
+          e.vy += Math.cos(performance.now() * 0.00045 + i * 0.7) * 0.007;
         }
         e.x += e.vx;
         e.y += e.vy;
-        e.vx *= 0.915;
-        e.vy *= 0.915;
+        e.vx *= 0.905;
+        e.vy *= 0.905;
       }
 
       if (sets.autoGrow && s.animationEnabled) {
