@@ -1,0 +1,163 @@
+.round-btn {
+  border: none;
+  background: var(--surface);
+  color: var(--ink);
+  border-radius: var(--radius-pill);
+  padding: 0.45rem 0.85rem;
+  cursor: pointer;
+  font-size: 0.78rem;
+  letter-spacing: 0.02em;
+}
+
+.round-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.round-btn--active {
+  background: var(--accent);
+  color: #f4f3f0;
+}
+
+.round-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border: none;
+  background: transparent;
+  padding: 0.35rem 0;
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.round-toggle__dot {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 50%;
+  background: var(--line);
+}
+
+.round-toggle--on .round-toggle__dot {
+  background: var(--accent);
+}
+
+.round-toggle__label {
+  color: var(--ink);
+}
+
+.slider {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.slider__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.slider__val {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.slider input[type='range'] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.lab {
+  display: grid;
+  grid-template-columns: minmax(280px, 340px) 1fr;
+  height: 100%;
+}
+
+.lab__panel {
+  border-right: 1px solid var(--line);
+  background: var(--surface);
+  padding: 1.1rem 1rem 1.4rem;
+  overflow-y: auto;
+}
+
+.lab__brand {
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.35rem;
+}
+
+.lab__title {
+  font-size: 1.05rem;
+  font-weight: 500;
+  margin: 0 0 1rem;
+}
+
+.lab__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 0.85rem;
+  font-size: 0.78rem;
+}
+
+.lab__field label {
+  color: var(--muted);
+}
+
+.lab__field input[type='text'],
+.lab__field select {
+  width: 100%;
+  border: none;
+  border-radius: var(--radius-pill);
+  padding: 0.55rem 0.75rem;
+  background: var(--bg);
+}
+
+.lab__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.75rem;
+}
+
+.lab__section-title {
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0.9rem 0 0.45rem;
+}
+
+.lab__stage {
+  min-height: 0;
+  height: 100%;
+  position: relative;
+}
+
+.lab__canvas-wrap {
+  height: 100%;
+  width: 100%;
+  position: relative;
+  background: var(--bg);
+}
+
+.lab__canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
+
+.lab__hint {
+  position: absolute;
+  right: 0.75rem;
+  bottom: 0.55rem;
+  font-size: 0.68rem;
+  color: var(--muted);
+  pointer-events: none;
+}
