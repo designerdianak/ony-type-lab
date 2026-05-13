@@ -11,9 +11,15 @@ type Ent = {
   y: number;
   vx: number;
   vy: number;
+  /** Радиус для столкновений (компактный — буквы плотнее) */
   r: number;
+  /** Круглый хит для клонов; у корней не используется */
+  rClick: number;
+  /** Прямоугольник клика по bbox глифа (только корни) */
+  hitRect: { l: number; t: number; r: number; b: number } | null;
   hx: number;
   hy: number;
+  isRoot: boolean;
 };
 
 export function createExpansionMode(
@@ -51,9 +57,14 @@ export function createExpansionMode(
     const oy = s.h * 0.55;
     const lays = layoutGlyphs(ctx, s.text, fontCss, s.fontSize, s.letterSpacing, ox, oy);
     ents = lays.map((g) => {
-      const r = Math.max(g.w, g.h) * 0.52;
       const cx = g.x + g.w * 0.5;
       const cy = g.baseline - g.h * 0.45;
+      /** Не max(w,h): у узких букв получался огромный невидимый круг */
+      const r = Math.max(
+        s.fontSize * 0.07,
+        Math.min(g.w, g.h) * 0.3 + Math.max(g.w, g.h) * 0.11,
+      );
+      const pad = 3;
       return {
         char: g.char,
         x: cx,
@@ -61,8 +72,16 @@ export function createExpansionMode(
         vx: 0,
         vy: 0,
         r,
+        rClick: r * 0.55,
+        hitRect: {
+          l: g.x - pad,
+          t: g.baseline - g.h - pad,
+          r: g.x + g.w + pad,
+          b: g.baseline + pad,
+        },
         hx: cx,
         hy: cy,
+        isRoot: true,
       };
     });
   }
@@ -72,10 +91,23 @@ export function createExpansionMode(
     let bestD = Infinity;
     for (let i = 0; i < ents.length; i++) {
       const e = ents[i]!;
-      const d = Math.hypot(e.x - px, e.y - py);
-      if (d < e.r && d < bestD) {
-        bestD = d;
-        best = i;
+      if (e.hitRect) {
+        const { l, t, r, b } = e.hitRect;
+        if (px >= l && px <= r && py >= t && py <= b) {
+          const cx = (l + r) * 0.5;
+          const cy = (t + b) * 0.5;
+          const d = Math.hypot(px - cx, py - cy);
+          if (d < bestD) {
+            bestD = d;
+            best = i;
+          }
+        }
+      } else {
+        const d = Math.hypot(e.x - px, e.y - py);
+        if (d < e.rClick && d < bestD) {
+          bestD = d;
+          best = i;
+        }
       }
     }
     return best;
@@ -100,8 +132,11 @@ export function createExpansionMode(
         vx: Math.cos(ang) * burst,
         vy: Math.sin(ang) * burst,
         r: base.r,
-        hx: base.hx + (Math.random() - 0.5) * 2,
+        rClick: Math.max(base.r * 0.42, 4),
+        hitRect: null,
+        hx: base.hx,
         hy: base.hy,
+        isRoot: false,
       });
     }
     const push = s.visual.expansion.spreadForce * 14;
@@ -117,7 +152,7 @@ export function createExpansionMode(
   function tick() {
     const s = getSnap();
     rebuildIfNeeded();
-    clearNeutral(ctx, s.w, s.h);
+    clearNeutral(ctx, s.w, s.h, s.visual.stageBackground);
     applyMultiplyBlend(ctx, s.visual.multiplyBlend);
 
     const sets = s.visual.expansion;
@@ -137,10 +172,18 @@ export function createExpansionMode(
     const impulse = 0.22 + sets.collisionImpulse * 0.62;
     separateDiscs(xs, ys, rs, sets.collisionSpacing, 10);
     separateDiscs(xs, ys, rs, sets.collisionSpacing, 6);
+    for (let i = 0; i < n; i++) {
+      const e = ents[i]!;
+      if (e.isRoot) {
+        xs[i] = e.hx;
+        ys[i] = e.hy;
+      }
+    }
 
     if (!frozen) {
       for (let i = 0; i < n; i++) {
         const e = ents[i]!;
+        if (e.isRoot) continue;
         const ox = xs[i]! - e.x;
         const oy = ys[i]! - e.y;
         e.vx += ox * impulse;
@@ -149,12 +192,17 @@ export function createExpansionMode(
 
       for (let i = 0; i < n; i++) {
         const e = ents[i]!;
+        if (e.isRoot) {
+          e.x = e.hx;
+          e.y = e.hy;
+          e.vx = 0;
+          e.vy = 0;
+          continue;
+        }
         const tx = xs[i]!;
         const ty = ys[i]!;
         e.vx = lerp(e.vx, (tx - e.x) * sets.spreadForce * 0.32, 0.2);
         e.vy = lerp(e.vy, (ty - e.y) * sets.spreadForce * 0.32, 0.2);
-        e.vx += (e.hx - e.x) * 0.00045;
-        e.vy += (e.hy - e.y) * 0.00075;
         if (s.animationEnabled) {
           e.vx += Math.sin(performance.now() * 0.0005 + i) * 0.008;
           e.vy += Math.cos(performance.now() * 0.00045 + i * 0.7) * 0.007;

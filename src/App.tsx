@@ -25,15 +25,15 @@ const DEFAULT_WEIGHT =
 function modeHint(mode: LabModeId): string {
   switch (mode) {
     case 'expansion':
-      return 'Клик — клоны. «Стоп» — зафиксировать кадр для PNG';
+      return 'Клик по букве — клоны; оригиналы стоят на месте. «Стоп» — PNG';
     case 'bloom':
-      return 'Кисть толкает буквы; отпускание — возврат. Стоп — фиксация';
+      return 'Веди мышь рядом с буквами — разлетаются; зажми — кисть. Стоп — фиксация';
     case 'assembly':
-      return 'Копии слетают к буквам (preset 2). Стоп — фиксация';
+      return 'Копии с глитч-смещением и микро-орбитой, сходятся к букве';
     case 'symbol':
-      return 'Оверлей цифр/знаков из шрифта. Стоп — заморозить кадр';
+      return 'Оверлей цифр/знаков; «Всегда» или клик/наведение. Стоп — заморозить';
     case 'elastic':
-      return 'Тяни букву — она остаётся; зазоры заполняются её копиями';
+      return 'Тяни букву — копии в зазорах; после отпускания излом сохраняется';
     case 'softBody':
       return 'Клик по холсту — буквы по очереди падают (псевдо‑3D)';
     default:
@@ -105,6 +105,7 @@ export default function App() {
       height: h,
       fill,
       multiplyBlend: visual.multiplyBlend,
+      stageBackground: visual.stageBackground,
     });
     downloadTextFile(svg, 'ony-type-lab.svg');
   };
@@ -234,6 +235,28 @@ export default function App() {
             />
           </div>
         )}
+
+        <div className="lab__section-title">Холст</div>
+        <div className="lab__field lab__field--row">
+          <label htmlFor="lab-bg">Фон</label>
+          <input
+            id="lab-bg"
+            type="color"
+            value={visual.stageBackground === 'transparent' ? '#f4f3f0' : visual.stageBackground}
+            disabled={visual.stageBackground === 'transparent'}
+            onChange={(e) => setVisual((s) => ({ ...s, stageBackground: e.target.value }))}
+          />
+          <RoundToggle
+            label="Прозрачный"
+            pressed={visual.stageBackground === 'transparent'}
+            onChange={(on) =>
+              setVisual((s) => ({
+                ...s,
+                stageBackground: on ? 'transparent' : '#f4f3f0',
+              }))
+            }
+          />
+        </div>
 
         <div className="lab__section-title">Режим</div>
         <div className="lab__row">

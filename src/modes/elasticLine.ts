@@ -134,6 +134,27 @@ export function createElasticLineMode(
     return out;
   }
 
+  /** Копии вдоль любых растянутых сегментов — остаются после отпускания */
+  function stretchGapFills(): { x: number; y: number; ang: number; ch: string; a: number }[] {
+    const s = getSnap();
+    const out: { x: number; y: number; ang: number; ch: string; a: number }[] = [];
+    for (let i = 0; i < chars.length - 1; i++) {
+      const x0 = bx[i]!;
+      const y0 = by[i]!;
+      const x1 = bx[i + 1]!;
+      const y1 = by[i + 1]!;
+      const rest = Math.hypot(initBx[i + 1]! - initBx[i]!, initBy[i + 1]! - initBy[i]!);
+      const curr = Math.hypot(x1 - x0, y1 - y0);
+      if (curr <= rest * 1.04) continue;
+      const ch = chars[i + 1] ?? chars[i]!;
+      const sp = Math.max(6, (widths[i + 1] ?? widths[i] ?? s.fontSize * 0.5) * s.visual.elastic.fillSpacing);
+      sampleSegment(x0, y0, x1, y1, sp, out, ch);
+    }
+    const alpha = dragIdx >= 0 ? 0.2 : 0.34;
+    for (const o of out) o.a = alpha;
+    return out;
+  }
+
   function drawLetterAt(
     ch: string,
     x: number,
@@ -161,10 +182,11 @@ export function createElasticLineMode(
     const frozen = s.visual.sceneFrozen;
     if (!frozen) relaxRope();
 
-    clearNeutral(ctx, s.w, s.h);
+    clearNeutral(ctx, s.w, s.h, s.visual.stageBackground);
     applyMultiplyBlend(ctx, s.visual.multiplyBlend);
 
-    const fills = dragIdx >= 0 ? gapFills(dragIdx) : [];
+    const fills =
+      dragIdx >= 0 ? [...stretchGapFills(), ...gapFills(dragIdx)] : stretchGapFills();
 
     for (const f of fills) {
       drawLetterAt(

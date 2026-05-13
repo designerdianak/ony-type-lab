@@ -7,13 +7,21 @@ export function setupHiDpiCanvas(canvas: HTMLCanvasElement, ctx: CanvasRendering
   return { dpr, width: rect.width, height: rect.height };
 }
 
-export function clearNeutral(ctx: CanvasRenderingContext2D, w: number, h: number) {
+/** `stageBackground === 'transparent'` — только clear, без заливки (альфа PNG). */
+export function clearNeutral(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  stageBackground: string = '#f4f3f0',
+) {
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
   ctx.restore();
-  ctx.fillStyle = '#f4f3f0';
-  ctx.fillRect(0, 0, w, h);
+  if (stageBackground !== 'transparent') {
+    ctx.fillStyle = stageBackground;
+    ctx.fillRect(0, 0, w, h);
+  }
 }
 
 export function applyMultiplyBlend(ctx: CanvasRenderingContext2D, enabled: boolean) {

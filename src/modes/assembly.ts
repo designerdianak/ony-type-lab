@@ -13,8 +13,12 @@ type Slot = {
   merge: number;
   ghostAngles: number[];
   ghostRadius: number[];
+  /** Статичный пиксельный глитч на копию */
+  gjx: number[];
+  gjy: number[];
   jx: number;
   jy: number;
+  orbitSeed: number;
 };
 
 export function createAssemblyMode(
@@ -39,9 +43,13 @@ export function createAssemblyMode(
     slots = lays.map((g) => {
       const angles: number[] = [];
       const radii: number[] = [];
+      const gjx: number[] = [];
+      const gjy: number[] = [];
       for (let k = 0; k < copies; k++) {
         angles.push((k / copies) * Math.PI * 2 + Math.random() * 0.4);
         radii.push((0.35 + Math.random() * 0.65) * s.fontSize * s.visual.assembly.orbitRadius * 2.2);
+        gjx.push((Math.random() - 0.5) * 5);
+        gjy.push((Math.random() - 0.5) * 4);
       }
       return {
         char: g.char,
@@ -52,8 +60,11 @@ export function createAssemblyMode(
         merge: 0,
         ghostAngles: angles,
         ghostRadius: radii,
+        gjx,
+        gjy,
         jx: 0,
         jy: 0,
+        orbitSeed: Math.random() * Math.PI * 2,
       };
     });
   }
@@ -70,11 +81,12 @@ export function createAssemblyMode(
   function tick() {
     const s = getSnap();
     ensure();
-    clearNeutral(ctx, s.w, s.h);
+    clearNeutral(ctx, s.w, s.h, s.visual.stageBackground);
     applyMultiplyBlend(ctx, s.visual.multiplyBlend);
 
     const frozen = s.visual.sceneFrozen;
     const spd = s.visual.assembly.mergeSpeed * (s.animationEnabled ? 1.1 : 0.55);
+    const t = performance.now();
     if (!frozen) {
       for (const sl of slots) {
         sl.merge = Math.min(1, sl.merge + spd);
@@ -112,11 +124,24 @@ export function createAssemblyMode(
       const ease = 1 - Math.pow(1 - sl.merge, 2.4);
       const stagger = i * 0.022;
       const me = Math.max(0, Math.min(1, (ease - stagger) / Math.max(0.12, 1 - stagger)));
+      const microOrbit = s.fontSize * 0.06 * (1 - me * 0.35);
       for (let k = 0; k < copies; k++) {
         const ang = sl.ghostAngles[k]!;
         const R = sl.ghostRadius[k]! * (1 - me);
-        const gx = sl.tx + Math.cos(ang + sl.merge * 1.1) * R;
-        const gy = sl.ty + Math.sin(ang + sl.merge * 0.9) * R * 0.38 - R * 0.15 * (1 - me);
+        const wobble =
+          microOrbit * Math.sin(t * 0.0011 + sl.orbitSeed + k * 1.7 + sl.merge * 6);
+        const wobbleY = microOrbit * 0.55 * Math.cos(t * 0.00095 + k * 1.1);
+        const gx =
+          sl.tx +
+          Math.cos(ang + sl.merge * 1.1) * R +
+          sl.gjx[k]! +
+          wobble;
+        const gy =
+          sl.ty +
+          Math.sin(ang + sl.merge * 0.9) * R * 0.38 -
+          R * 0.15 * (1 - me) +
+          sl.gjy[k]! +
+          wobbleY;
         ctx.globalAlpha = 0.12 + 0.32 * (1 - me);
         ctx.fillStyle = colorForGlyph({
           mode: s.visual.colorMode,
@@ -135,7 +160,15 @@ export function createAssemblyMode(
         index: i,
         total: slots.length,
       });
-      ctx.fillText(sl.char, sl.tx + sl.jx, sl.ty + sl.jy);
+      const qx =
+        sl.tx +
+        sl.jx +
+        Math.sin(t * 0.0013 + sl.orbitSeed) * s.fontSize * 0.04 * me;
+      const qy =
+        sl.ty +
+        sl.jy +
+        Math.cos(t * 0.0011 + sl.orbitSeed * 1.3) * s.fontSize * 0.035 * me;
+      ctx.fillText(sl.char, qx, qy);
     }
     ctx.restore();
   }

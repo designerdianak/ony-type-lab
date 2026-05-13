@@ -89,6 +89,8 @@ export interface PlaygroundVisualState {
   text: string;
   fontSize: number;
   letterSpacing: number;
+  /** Фон сцены: hex/rgb или слово `transparent` для PNG с альфой */
+  stageBackground: string;
   multiplyBlend: boolean;
   animationEnabled: boolean;
   /** «Стоп»: зафиксировать кадр для экспорта */
@@ -108,6 +110,7 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
   text: 'Play Type',
   fontSize: 72,
   letterSpacing: 0,
+  stageBackground: '#f4f3f0',
   multiplyBlend: false,
   animationEnabled: true,
   sceneFrozen: false,
@@ -117,7 +120,7 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
   expansion: {
     cloneAmount: 3,
     spreadForce: 0.42,
-    collisionSpacing: 4,
+    collisionSpacing: 2,
     autoGrow: false,
     collisionImpulse: 0.72,
   },
@@ -142,7 +145,7 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
     drift: 0.35,
   },
   symbol: {
-    interaction: 'clickToPaint',
+    interaction: 'alwaysOn',
     symbolDensity: 0.65,
     swapEveryFrames: 20,
   },

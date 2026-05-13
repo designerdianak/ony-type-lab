@@ -91,8 +91,30 @@ export function createBloomPaintMode(
     const cx = lastMouseX;
     const cy = lastMouseY;
     const cd = Math.hypot(px - cx, py - cy);
-    p += smoothstep(100, 0, cd) * 0.35 * (painting ? 1 : 0.45);
-    return Math.min(2.2, p);
+    /** Наведение без клика — почти как кисть: буквы разлетаются от курсора */
+    const hover = painting ? 1 : 0.82;
+    p += smoothstep(168, 0, cd) * 0.62 * hover;
+    return Math.min(2.4, p);
+  }
+
+  /** Давление «кисти» только от курсора (для импульса от границы глифа) */
+  function mouseBrushPressure(px: number, py: number): number {
+    const cd = Math.hypot(px - lastMouseX, py - lastMouseY);
+    const hover = painting ? 1 : 0.88;
+    return smoothstep(175, 0, cd) * hover;
+  }
+
+  function nearestRectPoint(
+    mx: number,
+    my: number,
+    left: number,
+    top: number,
+    right: number,
+    bottom: number,
+  ): { nx: number; ny: number; d: number } {
+    const nx = Math.min(Math.max(mx, left), right);
+    const ny = Math.min(Math.max(my, top), bottom);
+    return { nx, ny, d: Math.hypot(mx - nx, my - ny) };
   }
 
   function spawnShape(px: number, py: number) {
@@ -176,7 +198,7 @@ export function createBloomPaintMode(
   function tick() {
     const s = getSnap();
     ensureLayout();
-    clearNeutral(ctx, s.w, s.h);
+    clearNeutral(ctx, s.w, s.h, s.visual.stageBackground);
     const mult = s.visual.multiplyBlend || s.visual.bloom.multiply;
     applyMultiplyBlend(ctx, mult);
 
@@ -197,22 +219,46 @@ export function createBloomPaintMode(
     const returnK = 0.04 + b.letterReturn * 0.14;
     if (!frozen) {
       for (const h of homes) {
-        const cx = h.x + h.w * 0.5;
-        const cy = h.bl - h.h * 0.45;
-        const pr = fieldPressure(cx, cy, t);
+        const left = h.x;
+        const right = h.x + h.w;
+        const top = h.bl - h.h;
+        const bot = h.bl + Math.max(6, h.h * 0.08);
+        const samples = [
+          { x: h.x + h.w * 0.5, y: h.bl - h.h * 0.45 },
+          { x: h.x + h.w * 0.2, y: h.bl - h.h * 0.35 },
+          { x: h.x + h.w * 0.8, y: h.bl - h.h * 0.35 },
+          { x: h.x + h.w * 0.5, y: h.bl - h.h * 0.08 },
+        ];
+        let pr = 0;
+        let mBrush = 0;
+        for (const samplePt of samples) {
+          pr = Math.max(pr, fieldPressure(samplePt.x, samplePt.y, t));
+          mBrush = Math.max(mBrush, mouseBrushPressure(samplePt.x, samplePt.y));
+        }
+        const near = nearestRectPoint(lastMouseX, lastMouseY, left, top, right, bot);
+        const edgeBoost = smoothstep(42, 0, near.d) * (0.55 + b.motionIntensity * 0.45);
+        mBrush = Math.max(mBrush, edgeBoost);
+
+        const cx = near.nx;
+        const cy = near.ny;
         const ang = Math.atan2(cy - lastMouseY, cx - lastMouseX) || 0;
-        const push = pr * (18 + b.motionIntensity * 32);
-        h.vx += Math.cos(ang) * push * 0.014;
-        h.vy += Math.sin(ang) * push * 0.014;
+        const push = pr * (22 + b.motionIntensity * 38);
+        h.vx += Math.cos(ang) * push * 0.017;
+        h.vy += Math.sin(ang) * push * 0.017;
+        /** Доп. отталкивание от курсора по ближайшей точке контура */
+        if (near.d < 120 && mBrush > 0.04) {
+          const ux = (near.nx - lastMouseX) / (near.d + 0.01);
+          const uy = (near.ny - lastMouseY) / (near.d + 0.01);
+          const imp = mBrush * (9 + b.motionIntensity * 26) * smoothstep(120, 0, near.d);
+          h.vx += ux * imp * 0.11;
+          h.vy += uy * imp * 0.11;
+        }
         h.vx += -h.ox * returnK * (0.35 + pr * 0.2);
         h.vy += -h.oy * returnK * (0.35 + pr * 0.2);
         h.ox += h.vx;
         h.oy += h.vy;
         h.vx *= 0.88;
         h.vy *= 0.88;
-        const hide = pr > 0.85 ? 0.08 : 1;
-        h.ox *= hide;
-        h.oy *= hide;
       }
 
       const spawnGap = Math.round(lerp(88, 10, b.figureDensity));

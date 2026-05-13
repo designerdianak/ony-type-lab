@@ -105,8 +105,21 @@
   font-size: 0.78rem;
 }
 
-.lab__field label {
-  color: var(--muted);
+.lab__field--row {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.lab__field--row input[type='color'] {
+  width: auto;
+  min-width: 2.5rem;
+  height: 2rem;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
 }
 
 .lab__field input[type='text'],

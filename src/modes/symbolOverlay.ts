@@ -4,8 +4,12 @@ import { applyMultiplyBlend, clearNeutral } from '../utils/canvas';
 import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
 import type { ModeController, ModeSnapshot } from './types';
 
-/** Символы из «набора шрифта» — цифры и пунктуация для оверлея */
-const GLYPH_OVERLAY_POOL = '0123456789?!@#%&*+-=:/§|\\<>[]{}';
+/** Символы, которые обычно есть в кастомных шрифтах (без редкого юникода) */
+const GLYPH_OVERLAY_POOL = '0123456789?!@#%&*+-=:/<>[]{}';
+
+function fontCssAtSize(fontCss: string, sizePx: number): string {
+  return fontCss.replace(/[\d.]+(?=px\b)/, String(Math.round(sizePx)));
+}
 
 type G = {
   char: string;
@@ -27,6 +31,7 @@ export function createSymbolOverlayMode(
   let layoutSig = '';
   let tickerFn: (() => void) | null = null;
   let clickHandler: ((e: MouseEvent) => void) | null = null;
+  let moveHandler: ((e: PointerEvent) => void) | null = null;
   let frame = 0;
 
   function pickSym() {
@@ -63,15 +68,26 @@ export function createSymbolOverlayMode(
   function hit(px: number, py: number): number {
     for (let i = 0; i < glyphs.length; i++) {
       const g = glyphs[i]!;
-      if (px >= g.x && px <= g.x + g.w && py >= g.bl - g.h && py <= g.bl + 8) return i;
+      const pad = 6;
+      if (px >= g.x - pad && px <= g.x + g.w + pad && py >= g.bl - g.h - pad && py <= g.bl + pad) return i;
     }
     return -1;
+  }
+
+  function pokeNear(px: number, py: number, r: number) {
+    const r2 = r * r;
+    for (let i = 0; i < glyphs.length; i++) {
+      const g = glyphs[i]!;
+      const cx = g.x + g.w * 0.5;
+      const cy = g.bl - g.h * 0.5;
+      if ((px - cx) ** 2 + (py - cy) ** 2 <= r2) g.active = 1;
+    }
   }
 
   function tick() {
     const s = getSnap();
     ensure();
-    clearNeutral(ctx, s.w, s.h);
+    clearNeutral(ctx, s.w, s.h, s.visual.stageBackground);
     applyMultiplyBlend(ctx, s.visual.multiplyBlend);
     const t = performance.now();
     const always = s.visual.symbol.interaction === 'alwaysOn';
@@ -111,10 +127,8 @@ export function createSymbolOverlayMode(
     ctx.save();
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'center';
-    const symSize = Math.max(10, s.fontSize * 0.26 * s.visual.symbol.symbolDensity);
-    const famMatch = /"([^"]+)"/.exec(s.fontCss);
-    const fam = famMatch?.[1] ?? 'ONYByteLab';
-    ctx.font = `${symSize}px "${fam}"`;
+    const symSize = Math.max(14, s.fontSize * 0.32 * s.visual.symbol.symbolDensity);
+    ctx.font = fontCssAtSize(s.fontCss, symSize);
     for (let i = 0; i < glyphs.length; i++) {
       const g = glyphs[i]!;
       const on = always || g.active > 0.2;
@@ -125,7 +139,7 @@ export function createSymbolOverlayMode(
       ctx.save();
       ctx.translate(cx, cy);
       ctx.rotate(g.rot);
-      ctx.globalAlpha = 0.22;
+      ctx.globalAlpha = 0.72;
       ctx.fillStyle = colorForGlyph({
         mode: s.visual.colorMode,
         monochrome: s.visual.monochromeColor,
@@ -152,13 +166,25 @@ export function createSymbolOverlayMode(
         const idx = hit(ev.clientX - r.left, ev.clientY - r.top);
         if (idx >= 0) glyphs[idx]!.active = 1;
       };
+      moveHandler = (ev: PointerEvent) => {
+        const s = getSnap();
+        if (s.visual.sceneFrozen) return;
+        if (s.visual.symbol.interaction !== 'clickToPaint') return;
+        const r = canvas.getBoundingClientRect();
+        const px = ev.clientX - r.left;
+        const py = ev.clientY - r.top;
+        pokeNear(px, py, Math.max(48, s.fontSize * 0.85));
+      };
       canvas.addEventListener('click', clickHandler);
+      canvas.addEventListener('pointermove', moveHandler);
     },
     stop() {
       if (tickerFn) gsap.ticker.remove(tickerFn);
       tickerFn = null;
       if (clickHandler) canvas.removeEventListener('click', clickHandler);
+      if (moveHandler) canvas.removeEventListener('pointermove', moveHandler);
       clickHandler = null;
+      moveHandler = null;
     },
     dispose() {
       this.stop();
