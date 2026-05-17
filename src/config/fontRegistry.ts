@@ -105,5 +105,6 @@ export function getFontFamilyById(id: string): FontFamilyEntry | undefined {
 }
 
 export function fontUrlForFile(file: string): string {
-  return `/fonts/${file}`;
+  const base = import.meta.env.BASE_URL;
+  return `${base}fonts/${file}`;
 }
