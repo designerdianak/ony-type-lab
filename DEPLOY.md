@@ -2,6 +2,11 @@
 
 Сайт: https://designerdianak.github.io/ony-type-lab/
 
+## Один репозиторий
+
+Открывайте в Cursor **корень** `ony-type-lab`, не папку `ony-type-lab/ony-type-lab` внутри.  
+Не клонируйте репозиторий внутрь проекта — иначе два `.git` и push уходит не туда.
+
 ## Почему был белый экран
 
 GitHub отдавал **исходный** `index.html` (`/src/main.tsx`), а не собранное приложение. Нужна папка `docs/` или деплой через Actions.
