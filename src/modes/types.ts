@@ -20,4 +20,6 @@ export interface ModeController {
   start(): void;
   stop(): void;
   dispose(): void;
+  /** Пробел: сброс «зажатой» мышью/перо-интеракции (как отпускание), для всех режимов. */
+  interruptInteraction(): void;
 }

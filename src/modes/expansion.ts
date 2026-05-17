@@ -3,24 +3,58 @@ import { colorForGlyph, lerp } from '../utils/colors';
 import { applyMultiplyBlend, clearNeutral } from '../utils/canvas';
 import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
 import { separateDiscs } from '../utils/physics';
+import { safeReleasePointerCapture } from '../utils/pointerCapture';
 import type { ModeController, ModeSnapshot } from './types';
 
 type Ent = {
   char: string;
+  /** Как в layoutGlyphs: левый край глифа на базовой линии */
   x: number;
   y: number;
   vx: number;
   vy: number;
-  /** Радиус для столкновений (компактный — буквы плотнее) */
+  /** actualBoundingBox* от пера (x,y), alphabetic — для хита и размера диска */
+  abl: number;
+  abr: number;
+  aba: number;
+  abd: number;
   r: number;
-  /** Круглый хит для клонов; у корней не используется */
-  rClick: number;
-  /** Прямоугольник клика по bbox глифа (только корни) */
-  hitRect: { l: number; t: number; r: number; b: number } | null;
-  hx: number;
-  hy: number;
-  isRoot: boolean;
 };
+
+function inkMetricsFromPen(
+  ctx: CanvasRenderingContext2D,
+  char: string,
+  fontCss: string,
+  _penX: number,
+  _penBaseline: number,
+): { abl: number; abr: number; aba: number; abd: number; r: number } {
+  ctx.save();
+  ctx.font = fontCss;
+  ctx.textBaseline = 'alphabetic';
+  const m = ctx.measureText(char);
+  const abl = m.actualBoundingBoxLeft ?? 0;
+  const abr = m.actualBoundingBoxRight ?? m.width;
+  const aba = m.actualBoundingBoxAscent ?? m.fontBoundingBoxAscent ?? 0;
+  const abd = m.actualBoundingBoxDescent ?? m.fontBoundingBoxDescent ?? 0;
+  const iw = abl + abr;
+  const ih = aba + abd;
+  const r = Math.max(1.5, Math.hypot(iw * 0.5, ih * 0.5) * 0.4);
+  ctx.restore();
+  return { abl, abr, aba, abd, r };
+}
+
+function discCx(e: Ent): number {
+  return e.x + (e.abr - e.abl) * 0.5;
+}
+
+function discCy(e: Ent): number {
+  return e.y + (e.abd - e.aba) * 0.5;
+}
+
+function setPenFromDisc(e: Ent, cx: number, cy: number) {
+  e.x = cx - (e.abr - e.abl) * 0.5;
+  e.y = cy - (e.abd - e.aba) * 0.5;
+}
 
 export function createExpansionMode(
   canvas: HTMLCanvasElement,
@@ -33,8 +67,14 @@ export function createExpansionMode(
   let lastSize = 0;
   let lastSpacing = 0;
   let tickerFn: (() => void) | null = null;
-  let clickHandler: ((e: MouseEvent) => void) | null = null;
+  let strokeDragging = false;
+  let capturePointerId: number | null = null;
+  let lastStrokeIdx = -1;
+  let onPointerDown: ((e: PointerEvent) => void) | null = null;
+  let onPointerMove: ((e: PointerEvent) => void) | null = null;
+  let onPointerUp: (() => void) | null = null;
   let autoTimer = 0;
+  let lastCanvasClearNonce = 0;
 
   function rebuildIfNeeded(force = false) {
     const s = getSnap();
@@ -57,57 +97,39 @@ export function createExpansionMode(
     const oy = s.h * 0.55;
     const lays = layoutGlyphs(ctx, s.text, fontCss, s.fontSize, s.letterSpacing, ox, oy);
     ents = lays.map((g) => {
-      const cx = g.x + g.w * 0.5;
-      const cy = g.baseline - g.h * 0.45;
-      /** Не max(w,h): у узких букв получался огромный невидимый круг */
-      const r = Math.max(
-        s.fontSize * 0.07,
-        Math.min(g.w, g.h) * 0.3 + Math.max(g.w, g.h) * 0.11,
-      );
-      const pad = 3;
+      const ink = inkMetricsFromPen(ctx, g.char, fontCss, g.x, g.baseline);
       return {
         char: g.char,
-        x: cx,
-        y: cy,
+        x: g.x,
+        y: g.baseline,
         vx: 0,
         vy: 0,
-        r,
-        rClick: r * 0.55,
-        hitRect: {
-          l: g.x - pad,
-          t: g.baseline - g.h - pad,
-          r: g.x + g.w + pad,
-          b: g.baseline + pad,
-        },
-        hx: cx,
-        hy: cy,
-        isRoot: true,
+        abl: ink.abl,
+        abr: ink.abr,
+        aba: ink.aba,
+        abd: ink.abd,
+        r: ink.r,
       };
     });
   }
 
   function hitIndex(px: number, py: number): number {
+    const pad = 0.5;
     let best = -1;
     let bestD = Infinity;
     for (let i = 0; i < ents.length; i++) {
       const e = ents[i]!;
-      if (e.hitRect) {
-        const { l, t, r, b } = e.hitRect;
-        if (px >= l && px <= r && py >= t && py <= b) {
-          const cx = (l + r) * 0.5;
-          const cy = (t + b) * 0.5;
-          const d = Math.hypot(px - cx, py - cy);
-          if (d < bestD) {
-            bestD = d;
-            best = i;
-          }
-        }
-      } else {
-        const d = Math.hypot(e.x - px, e.y - py);
-        if (d < e.rClick && d < bestD) {
-          bestD = d;
-          best = i;
-        }
+      const left = e.x - e.abl - pad;
+      const right = e.x + e.abr + pad;
+      const top = e.y - e.aba - pad;
+      const bottom = e.y + e.abd + pad;
+      if (px < left || px > right || py < top || py > bottom) continue;
+      const cx = discCx(e);
+      const cy = discCy(e);
+      const d = Math.hypot(px - cx, py - cy);
+      if (d < bestD) {
+        bestD = d;
+        best = i;
       }
     }
     return best;
@@ -118,39 +140,52 @@ export function createExpansionMode(
     if (s.visual.sceneFrozen) return;
     const base = ents[idx]!;
     const amt = Math.max(1, Math.round(s.visual.expansion.cloneAmount));
-    /** Плотный «сгусток» как на референсе: почти в одной точке, сразу давит на соседей */
+    const spawnPx = Math.max(1, s.visual.expansion.cloneSpawnDistance);
     for (let k = 0; k < amt; k++) {
       const ang = (k / Math.max(1, amt)) * Math.PI * 2 + Math.random() * 0.35;
-      const dist = 0.15 + Math.random() * 2.2;
-      const nx = base.x + Math.cos(ang) * dist;
-      const ny = base.y + Math.sin(ang) * dist;
+      const dist = 0.15 + Math.random() * spawnPx;
+      const ncx = discCx(base) + Math.cos(ang) * dist;
+      const ncy = discCy(base) + Math.sin(ang) * dist;
       const burst = s.visual.expansion.spreadForce * (9 + Math.random() * 5);
-      ents.push({
+      const clone: Ent = {
         char: base.char,
-        x: nx,
-        y: ny,
+        x: 0,
+        y: 0,
         vx: Math.cos(ang) * burst,
         vy: Math.sin(ang) * burst,
+        abl: base.abl,
+        abr: base.abr,
+        aba: base.aba,
+        abd: base.abd,
         r: base.r,
-        rClick: Math.max(base.r * 0.42, 4),
-        hitRect: null,
-        hx: base.hx,
-        hy: base.hy,
-        isRoot: false,
-      });
+      };
+      setPenFromDisc(clone, ncx, ncy);
+      ents.push(clone);
     }
     const push = s.visual.expansion.spreadForce * 14;
     for (const e of ents) {
-      const dx = e.x - px;
-      const dy = e.y - py;
+      const cx = discCx(e);
+      const cy = discCy(e);
+      const dx = cx - px;
+      const dy = cy - py;
       const d = Math.hypot(dx, dy) + 0.01;
       e.vx += (dx / d) * push * 0.11;
       e.vy += (dy / d) * push * 0.11;
     }
   }
 
+  function clientToCanvas(ev: PointerEvent): { px: number; py: number } {
+    const rect = canvas.getBoundingClientRect();
+    return { px: ev.clientX - rect.left, py: ev.clientY - rect.top };
+  }
+
   function tick() {
     const s = getSnap();
+    const cn = s.visual.canvasClearNonce ?? 0;
+    if (cn !== lastCanvasClearNonce) {
+      lastCanvasClearNonce = cn;
+      lastText = '';
+    }
     rebuildIfNeeded();
     clearNeutral(ctx, s.w, s.h, s.visual.stageBackground);
     applyMultiplyBlend(ctx, s.visual.multiplyBlend);
@@ -165,50 +200,37 @@ export function createExpansionMode(
     const ys = new Float32Array(n);
     const rs = new Float32Array(n);
     for (let i = 0; i < n; i++) {
-      xs[i] = ents[i]!.x;
-      ys[i] = ents[i]!.y;
-      rs[i] = ents[i]!.r;
+      const e = ents[i]!;
+      xs[i] = discCx(e);
+      ys[i] = discCy(e);
+      rs[i] = e.r;
     }
     const impulse = 0.22 + sets.collisionImpulse * 0.62;
     separateDiscs(xs, ys, rs, sets.collisionSpacing, 10);
     separateDiscs(xs, ys, rs, sets.collisionSpacing, 6);
-    for (let i = 0; i < n; i++) {
-      const e = ents[i]!;
-      if (e.isRoot) {
-        xs[i] = e.hx;
-        ys[i] = e.hy;
-      }
-    }
 
     if (!frozen) {
       for (let i = 0; i < n; i++) {
         const e = ents[i]!;
-        if (e.isRoot) continue;
-        const ox = xs[i]! - e.x;
-        const oy = ys[i]! - e.y;
+        const cx = discCx(e);
+        const cy = discCy(e);
+        const ox = xs[i]! - cx;
+        const oy = ys[i]! - cy;
         e.vx += ox * impulse;
         e.vy += oy * impulse;
       }
 
       for (let i = 0; i < n; i++) {
         const e = ents[i]!;
-        if (e.isRoot) {
-          e.x = e.hx;
-          e.y = e.hy;
-          e.vx = 0;
-          e.vy = 0;
-          continue;
-        }
         const tx = xs[i]!;
         const ty = ys[i]!;
-        e.vx = lerp(e.vx, (tx - e.x) * sets.spreadForce * 0.32, 0.2);
-        e.vy = lerp(e.vy, (ty - e.y) * sets.spreadForce * 0.32, 0.2);
-        if (s.animationEnabled) {
-          e.vx += Math.sin(performance.now() * 0.0005 + i) * 0.008;
-          e.vy += Math.cos(performance.now() * 0.00045 + i * 0.7) * 0.007;
-        }
-        e.x += e.vx;
-        e.y += e.vy;
+        let cx = discCx(e);
+        let cy = discCy(e);
+        e.vx = lerp(e.vx, (tx - cx) * sets.spreadForce * 0.32, 0.2);
+        e.vy = lerp(e.vy, (ty - cy) * sets.spreadForce * 0.32, 0.2);
+        cx += e.vx;
+        cy += e.vy;
+        setPenFromDisc(e, cx, cy);
         e.vx *= 0.905;
         e.vy *= 0.905;
       }
@@ -225,8 +247,8 @@ export function createExpansionMode(
 
     ctx.save();
     ctx.font = s.fontCss;
-    ctx.textBaseline = 'middle';
-    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'left';
     for (let i = 0; i < ents.length; i++) {
       const e = ents[i]!;
       const fill = colorForGlyph({
@@ -244,26 +266,70 @@ export function createExpansionMode(
 
   return {
     start() {
+      lastCanvasClearNonce = getSnap().visual.canvasClearNonce ?? 0;
       rebuildIfNeeded(true);
       tickerFn = () => tick();
       gsap.ticker.add(tickerFn);
-      clickHandler = (ev: MouseEvent) => {
-        const rect = canvas.getBoundingClientRect();
-        const px = ev.clientX - rect.left;
-        const py = ev.clientY - rect.top;
+
+      onPointerDown = (e: PointerEvent) => {
+        if (getSnap().visual.sceneFrozen) return;
+        strokeDragging = true;
+        const { px, py } = clientToCanvas(e);
         const idx = hitIndex(px, py);
+        lastStrokeIdx = idx;
         if (idx >= 0) cloneFrom(idx, px, py);
+        canvas.setPointerCapture(e.pointerId);
+        capturePointerId = e.pointerId;
       };
-      canvas.addEventListener('click', clickHandler);
+
+      onPointerMove = (e: PointerEvent) => {
+        if (!strokeDragging || getSnap().visual.sceneFrozen) return;
+        const { px, py } = clientToCanvas(e);
+        const idx = hitIndex(px, py);
+        if (idx >= 0 && idx !== lastStrokeIdx) {
+          cloneFrom(idx, px, py);
+          lastStrokeIdx = idx;
+        } else if (idx < 0) {
+          lastStrokeIdx = -1;
+        }
+      };
+
+      onPointerUp = () => {
+        safeReleasePointerCapture(canvas, capturePointerId);
+        capturePointerId = null;
+        strokeDragging = false;
+        lastStrokeIdx = -1;
+      };
+
+      canvas.addEventListener('pointerdown', onPointerDown);
+      canvas.addEventListener('pointermove', onPointerMove);
+      canvas.addEventListener('pointerup', onPointerUp);
+      canvas.addEventListener('pointercancel', onPointerUp);
+      window.addEventListener('pointerup', onPointerUp);
+      window.addEventListener('pointercancel', onPointerUp);
     },
     stop() {
+      safeReleasePointerCapture(canvas, capturePointerId);
+      capturePointerId = null;
+      strokeDragging = false;
+      lastStrokeIdx = -1;
       if (tickerFn) gsap.ticker.remove(tickerFn);
       tickerFn = null;
-      if (clickHandler) canvas.removeEventListener('click', clickHandler);
-      clickHandler = null;
+      if (onPointerDown) canvas.removeEventListener('pointerdown', onPointerDown);
+      if (onPointerMove) canvas.removeEventListener('pointermove', onPointerMove);
+      if (onPointerUp) {
+        canvas.removeEventListener('pointerup', onPointerUp);
+        canvas.removeEventListener('pointercancel', onPointerUp);
+        window.removeEventListener('pointerup', onPointerUp);
+        window.removeEventListener('pointercancel', onPointerUp);
+      }
+      onPointerDown = onPointerMove = onPointerUp = null;
     },
     dispose() {
       this.stop();
+    },
+    interruptInteraction() {
+      onPointerUp?.();
     },
   };
 }

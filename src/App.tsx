@@ -25,17 +25,17 @@ const DEFAULT_WEIGHT =
 function modeHint(mode: LabModeId): string {
   switch (mode) {
     case 'expansion':
-      return 'Клик по букве — клоны; оригиналы стоят на месте. «Стоп» — PNG';
+      return 'Клик или зажми и веди по буквам — клоны; ползунок — дистанция. Стоп — PNG';
     case 'bloom':
-      return 'Веди мышь рядом с буквами — разлетаются; зажми — кисть. Стоп — фиксация';
+      return 'Зажми и веди — живые формы; над буквой — мягкое растворение. Очистить экран — только рисунок';
     case 'assembly':
-      return 'Копии с глитч-смещением и микро-орбитой, сходятся к букве';
+      return 'Буквы слетают в слово и остаются слегка нестабильными';
     case 'symbol':
       return 'Оверлей цифр/знаков; «Всегда» или клик/наведение. Стоп — заморозить';
     case 'elastic':
       return 'Тяни букву — копии в зазорах; после отпускания излом сохраняется';
     case 'softBody':
-      return 'Клик по холсту — буквы по очереди падают (псевдо‑3D)';
+      return 'Непрерывный поток букв по полю; эхо-след в направлении движения';
     default:
       return '';
   }
@@ -69,7 +69,15 @@ export default function App() {
     setVisual((v) => ({ ...v, rainbowSeed: Math.random() * 1000 }));
   };
 
-  const resetAll = () => {
+  const resetModeSettings = () => {
+    setVisual({ ...DEFAULT_PLAYGROUND_VISUAL });
+  };
+
+  const clearCanvas = () => {
+    setVisual((v) => ({ ...v, canvasClearNonce: (v.canvasClearNonce ?? 0) + 1 }));
+  };
+
+  const resetEverything = () => {
     setText(DEFAULT_PLAYGROUND_VISUAL.text);
     setVisual({ ...DEFAULT_PLAYGROUND_VISUAL });
     setFamilyId(DEFAULT_FAMILY);
@@ -128,7 +136,11 @@ export default function App() {
         </div>
 
         <div className="lab__row">
-          <RoundButton onClick={resetAll}>Сброс</RoundButton>
+          <RoundButton onClick={resetModeSettings}>Настройки режимов</RoundButton>
+          <RoundButton onClick={clearCanvas}>Очистить экран</RoundButton>
+          <RoundButton onClick={resetEverything}>Сброс всего</RoundButton>
+        </div>
+        <div className="lab__row">
           <RoundButton onClick={exportPng} disabled={!fontReady}>
             PNG
           </RoundButton>
@@ -277,6 +289,15 @@ export default function App() {
               onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, cloneAmount: v } }))}
             />
             <LabeledSlider
+              label="Дистанция клонов (px)"
+              min={2}
+              max={56}
+              value={visual.expansion.cloneSpawnDistance}
+              onChange={(v) =>
+                setVisual((s) => ({ ...s, expansion: { ...s.expansion, cloneSpawnDistance: v } }))
+              }
+            />
+            <LabeledSlider
               label="Spread"
               min={0.05}
               max={1.2}
@@ -345,6 +366,15 @@ export default function App() {
               onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, dissolveSpeed: v } }))}
             />
             <LabeledSlider
+              label="Размытие пятна"
+              min={0}
+              max={1}
+              step={0.02}
+              value={visual.bloom.shapeBlur}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, shapeBlur: v } }))}
+            />
+            <LabeledSlider
               label="Motion"
               min={0.05}
               max={1.2}
@@ -374,8 +404,8 @@ export default function App() {
             <LabeledSlider
               label="Возврат букв"
               min={0.02}
-              max={0.35}
-              step={0.01}
+              max={1.6}
+              step={0.02}
               value={visual.bloom.letterReturn}
               format={(n) => n.toFixed(2)}
               onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, letterReturn: v } }))}
@@ -388,6 +418,24 @@ export default function App() {
               value={visual.bloom.graphicFade}
               format={(n) => n.toFixed(2)}
               onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, graphicFade: v } }))}
+            />
+            <LabeledSlider
+              label="Радиус полёта букв"
+              min={0.25}
+              max={2.4}
+              step={0.02}
+              value={visual.bloom.letterScatter}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, letterScatter: v } }))}
+            />
+            <LabeledSlider
+              label="Длительность качания овалов"
+              min={0.35}
+              max={2.8}
+              step={0.02}
+              value={visual.bloom.ovalSwayDuration}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, ovalSwayDuration: v } }))}
             />
             <div className="lab__row">
               <RoundToggle
@@ -415,7 +463,7 @@ export default function App() {
               onChange={(v) => setVisual((s) => ({ ...s, assembly: { ...s.assembly, inwardCopies: v } }))}
             />
             <LabeledSlider
-              label="Радиус орбиты"
+              label="Радиус прилёта"
               min={0.4}
               max={2.2}
               step={0.02}
@@ -424,12 +472,12 @@ export default function App() {
               onChange={(v) => setVisual((s) => ({ ...s, assembly: { ...s.assembly, orbitRadius: v } }))}
             />
             <LabeledSlider
-              label="Скорость слияния"
-              min={0.006}
-              max={0.045}
-              step={0.001}
+              label="Скорость сборки"
+              min={0.08}
+              max={0.65}
+              step={0.01}
               value={visual.assembly.mergeSpeed}
-              format={(n) => n.toFixed(3)}
+              format={(n) => n.toFixed(2)}
               onChange={(v) => setVisual((s) => ({ ...s, assembly: { ...s.assembly, mergeSpeed: v } }))}
             />
             <LabeledSlider
@@ -511,45 +559,63 @@ export default function App() {
 
         {mode === 'softBody' && (
           <>
-            <div className="lab__row">
-              <RoundButton
-                active={visual.softBody.look === 'metallic'}
-                onClick={() => setVisual((s) => ({ ...s, softBody: { ...s.softBody, look: 'metallic' } }))}
-              >
-                Metallic
-              </RoundButton>
-              <RoundButton
-                active={visual.softBody.look === 'matte'}
-                onClick={() => setVisual((s) => ({ ...s, softBody: { ...s.softBody, look: 'matte' } }))}
-              >
-                Matte
-              </RoundButton>
-            </div>
-            <div className="lab__row">
-              <RoundToggle
-                label="Gravity"
-                pressed={visual.softBody.gravity}
-                onChange={(v) => setVisual((s) => ({ ...s, softBody: { ...s.softBody, gravity: v } }))}
-              />
-            </div>
             <LabeledSlider
-              label="Softness"
-              min={0}
+              label="Копии вихря"
+              min={1}
+              max={16}
+              step={1}
+              value={visual.softBody.vortexCopies}
+              onChange={(v) => setVisual((s) => ({ ...s, softBody: { ...s.softBody, vortexCopies: v } }))}
+            />
+            <LabeledSlider
+              label="Глубина следа"
+              min={4}
+              max={24}
+              step={1}
+              value={visual.softBody.trailDepth}
+              onChange={(v) => setVisual((s) => ({ ...s, softBody: { ...s.softBody, trailDepth: v } }))}
+            />
+            <LabeledSlider
+              label="Завихрение потока"
+              min={0.4}
+              max={2.2}
+              step={0.02}
+              value={visual.softBody.swirl}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) => setVisual((s) => ({ ...s, softBody: { ...s.softBody, swirl: v } }))}
+            />
+            <LabeledSlider
+              label="Скорость потока"
+              min={0.15}
+              max={1.2}
+              step={0.02}
+              value={visual.softBody.flowSpeed}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) => setVisual((s) => ({ ...s, softBody: { ...s.softBody, flowSpeed: v } }))}
+            />
+            <LabeledSlider
+              label="Pixel jump"
+              min={1}
+              max={12}
+              value={visual.softBody.pixelJump}
+              onChange={(v) => setVisual((s) => ({ ...s, softBody: { ...s.softBody, pixelJump: v } }))}
+            />
+            <LabeledSlider
+              label="Drift"
+              min={0.05}
               max={1}
               step={0.01}
-              value={visual.softBody.softness}
+              value={visual.softBody.drift}
               format={(n) => n.toFixed(2)}
-              onChange={(v) => setVisual((s) => ({ ...s, softBody: { ...s.softBody, softness: v } }))}
+              onChange={(v) => setVisual((s) => ({ ...s, softBody: { ...s.softBody, drift: v } }))}
             />
-            <LabeledSlider
-              label="Repulsion"
-              min={0}
-              max={0.8}
-              step={0.01}
-              value={visual.softBody.repulsion}
-              format={(n) => n.toFixed(2)}
-              onChange={(v) => setVisual((s) => ({ ...s, softBody: { ...s.softBody, repulsion: v } }))}
-            />
+            <div className="lab__row">
+              <RoundToggle
+                label="Overlap"
+                pressed={visual.softBody.overlap}
+                onChange={(v) => setVisual((s) => ({ ...s, softBody: { ...s.softBody, overlap: v } }))}
+              />
+            </div>
           </>
         )}
       </aside>

@@ -1,186 +1,290 @@
 import gsap from 'gsap';
-import { colorForGlyph, clamp, hsla } from '../utils/colors';
+import { colorForGlyph, lerp, smoothstep } from '../utils/colors';
 import { applyMultiplyBlend, clearNeutral } from '../utils/canvas';
-import { separateDiscs } from '../utils/physics';
+import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
 import type { ModeController, ModeSnapshot } from './types';
+import type { SoftBodySettings } from '../types/playground';
 
-type D = {
+type FlowGlyph = {
   char: string;
+  w: number;
+  h: number;
   x: number;
   y: number;
   vx: number;
   vy: number;
-  r: number;
+  rot: number;
+  vrot: number;
+  scale: number;
+  phaseA: number;
+  phaseB: number;
+  phaseC: number;
+  speedMul: number;
+  streamIndex: number;
+  jx: number;
+  jy: number;
 };
 
 export function createSoftBodyMode(
-  canvas: HTMLCanvasElement,
+  _canvas: HTMLCanvasElement,
   ctx: CanvasRenderingContext2D,
   getSnap: () => ModeSnapshot,
 ): ModeController {
-  let queue: string[] = [];
-  let stack: D[] = [];
+  let glyphs: FlowGlyph[] = [];
+  let layoutSig = '';
   let tickerFn: (() => void) | null = null;
-  let clickHandler: ((e: MouseEvent) => void) | null = null;
-  let fontSig = '';
+  let lastCanvasClearNonce = 0;
+  let lastTickTime = performance.now();
+  let fieldAngle = 0;
+  let fieldAngleVel = 0;
 
-  function syncQueue() {
-    const s = getSnap();
-    const sig = `${s.text}|${s.fontCss}|${s.fontSize}`;
-    if (sig === fontSig) return;
-    fontSig = sig;
-    queue = s.text.split('').filter((c) => c.trim().length > 0);
-    stack = [];
+  function flowAngleAt(x: number, y: number, t: number, cfg: SoftBodySettings, w: number, h: number): number {
+    const tt = t * 0.001 * (0.35 + cfg.flowSpeed * 1.8);
+    const curl = cfg.swirl * 1.15;
+    const drift = cfg.drift * 2.4;
+    const nx = (x / Math.max(1, w)) * Math.PI * 2;
+    const ny = (y / Math.max(1, h)) * Math.PI * 2;
+    return (
+      fieldAngle +
+      Math.sin(nx * 1.1 + ny * 0.65 + tt * 0.9 + drift) * curl * 0.55 +
+      Math.cos(nx * 0.7 - ny * 1.2 + tt * 0.65) * curl * 0.42 +
+      Math.sin((x + y) * 0.0035 + tt * 0.45 + cfg.drift) * curl * 0.35
+    );
   }
 
-  function measureR(ch: string): number {
-    const s = getSnap();
-    ctx.save();
-    ctx.font = s.fontCss;
-    const m = ctx.measureText(ch);
-    const w = m.width;
-    const h =
-      (m.actualBoundingBoxAscent || 0) + (m.actualBoundingBoxDescent || 0) || s.fontSize * 0.85;
-    ctx.restore();
-    return Math.max(w, h) * 0.48;
+  function flowVelocityAt(
+    x: number,
+    y: number,
+    t: number,
+    cfg: SoftBodySettings,
+    w: number,
+    h: number,
+  ): { vx: number; vy: number } {
+    const ang = flowAngleAt(x, y, t, cfg, w, h);
+    const base = 18 + cfg.flowSpeed * 42 + cfg.drift * 22;
+    const turb =
+      1 +
+      Math.sin(t * 0.00055 + x * 0.008 + y * 0.006) * 0.12 * cfg.swirl +
+      Math.cos(t * 0.00042 + y * 0.01) * 0.08 * cfg.drift;
+    return {
+      vx: Math.cos(ang) * base * turb,
+      vy: Math.sin(ang) * base * turb * 0.62,
+    };
   }
 
-  function drawMetallicLetter(ch: string, x: number, y: number, i: number) {
+  function wrapGlyph(g: FlowGlyph, w: number, h: number, margin: number) {
+    const spanX = w + margin * 2;
+    const spanY = h + margin * 2;
+    if (g.x > w + margin) g.x -= spanX;
+    else if (g.x < -margin) g.x += spanX;
+    if (g.y > h + margin) g.y -= spanY;
+    else if (g.y < -margin) g.y += spanY;
+  }
+
+  function edgeAlpha(x: number, y: number, w: number, h: number): number {
+    const fx = smoothstep(0, 72, x) * smoothstep(0, 72, w - x);
+    const fy = smoothstep(0, 56, y) * smoothstep(0, 56, h - y);
+    return Math.sqrt(fx * fy);
+  }
+
+  function rebuild() {
     const s = getSnap();
-    const look = s.visual.softBody.look;
-    const soft = s.visual.softBody.softness;
-    const pad = s.fontSize * (0.55 + soft * 0.35);
-    ctx.save();
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    if (look === 'matte') {
-      const g = ctx.createRadialGradient(x, y, 0, x, y, pad);
-      const base = colorForGlyph({
-        mode: s.visual.colorMode,
-        monochrome: s.visual.monochromeColor,
-        seed: s.visual.rainbowSeed,
-        index: i,
-        total: 8,
-      });
-      g.addColorStop(0, base);
-      g.addColorStop(0.55, base);
-      g.addColorStop(1, 'rgba(0,0,0,0)');
-      ctx.fillStyle = g;
-      ctx.beginPath();
-      ctx.ellipse(x, y, pad * 0.92, pad * 0.72, 0, 0, Math.PI * 2);
-      ctx.globalAlpha = 0.35 + soft * 0.25;
-      ctx.fill();
-      ctx.globalAlpha = 1;
-      ctx.shadowBlur = 18 + soft * 22;
-      ctx.shadowColor = 'rgba(0,0,0,0.18)';
-      ctx.fillStyle = base;
-      ctx.fillText(ch, x, y);
-      ctx.shadowBlur = 0;
-      ctx.restore();
+    const cfg = s.visual.softBody;
+    const spacingBoost = cfg.overlap ? 0 : s.fontSize * 0.06;
+    const letter = s.letterSpacing + spacingBoost;
+    const tw = measureLineWidth(ctx, s.text, s.fontCss, letter);
+    const baseOx = (s.w - tw) * 0.5;
+    const oy = s.h * 0.55;
+    const lays = layoutGlyphs(ctx, s.text, s.fontCss, s.fontSize, letter, baseOx, oy);
+    if (lays.length === 0) {
+      glyphs = [];
       return;
     }
-    const hue = s.visual.colorMode === 'rainbow' ? (s.visual.rainbowSeed * 40 + i * 35) % 360 : 210;
-    const blob = ctx.createRadialGradient(x, y + pad * 0.08, 0, x, y, pad * 1.1);
-    blob.addColorStop(0, hsla(hue, 25, 88, 0.45));
-    blob.addColorStop(0.4, hsla(hue, 35, 72, 0.22));
-    blob.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = blob;
-    ctx.beginPath();
-    ctx.ellipse(x, y + s.fontSize * 0.06, pad * 0.95, pad * 0.62, 0, 0, Math.PI * 2);
-    ctx.globalAlpha = 0.5 + soft * 0.2;
-    ctx.fill();
-    ctx.globalAlpha = 1;
-    ctx.shadowBlur = 14 + soft * 18;
-    ctx.shadowColor = hsla(hue, 40, 40, 0.35);
-    for (let k = 5; k >= 1; k--) {
-      ctx.globalAlpha = 0.1 + k * 0.055;
-      ctx.fillStyle = hsla(hue, 8, 18 + k * 6, 1);
-      ctx.fillText(ch, x + k * 0.85, y + k * 0.8);
+
+    const avgW = Math.max(6, tw / lays.length);
+    const margin = 90;
+    const span = s.w + margin * 2;
+    const maxStream = Math.ceil(span / (avgW * 0.72)) + lays.length + 4;
+    const vortexMax = 16;
+    const vortex = Math.max(1, Math.min(vortexMax, Math.round(cfg.vortexCopies)));
+    const fillT = vortexMax <= 1 ? 1 : (vortex - 1) / (vortexMax - 1);
+    const count = Math.max(lays.length, Math.round(lerp(lays.length, maxStream, fillT)));
+
+    const mkGlyph = (src: (typeof lays)[0], x: number, y: number, streamIndex: number): FlowGlyph => ({
+      char: src.char,
+      w: src.w,
+      h: src.h,
+      x,
+      y,
+      vx: 0,
+      vy: 0,
+      rot: (Math.random() - 0.5) * 0.12,
+      vrot: (Math.random() - 0.5) * 0.0015,
+      scale: 0.96 + Math.random() * 0.08,
+      phaseA: Math.random() * Math.PI * 2,
+      phaseB: Math.random() * Math.PI * 2,
+      phaseC: Math.random() * 2000,
+      speedMul: 0.78 + Math.random() * 0.44,
+      streamIndex,
+      jx: 0,
+      jy: 0,
+    });
+
+    glyphs = [];
+
+    if (vortex <= 1) {
+      for (let i = 0; i < lays.length; i++) {
+        const g = lays[i]!;
+        glyphs.push(mkGlyph(g, g.x, g.baseline, i));
+      }
+      return;
     }
-    const g = ctx.createLinearGradient(x - 40, y - 50, x + 50, y + 40);
-    g.addColorStop(0, hsla(hue, 18, 72, 1));
-    g.addColorStop(0.45, hsla(hue, 35, 88, 1));
-    g.addColorStop(0.55, hsla(hue, 40, 55, 1));
-    g.addColorStop(1, hsla(hue, 25, 38, 1));
-    ctx.globalAlpha = 1;
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = g;
-    ctx.fillText(ch, x, y);
-    ctx.globalAlpha = 0.5;
-    ctx.fillStyle = '#ffffff';
-    ctx.fillText(ch, x - s.fontSize * 0.04, y - s.fontSize * 0.08);
-    ctx.restore();
+
+    let cursorX = -margin + Math.random() * avgW;
+    const rowH = s.fontSize * 1.15;
+
+    for (let i = 0; i < count; i++) {
+      const src = lays[i % lays.length]!;
+      const lane = (i % 3) - 1;
+      glyphs.push(
+        mkGlyph(
+          src,
+          cursorX,
+          oy + lane * rowH * 0.22 + (Math.random() - 0.5) * rowH * 0.35,
+          i,
+        ),
+      );
+      cursorX += src.w + letter + avgW * 0.08;
+      if (cursorX > s.w + margin) {
+        cursorX = -margin + (Math.random() - 0.5) * 40;
+      }
+    }
+  }
+
+  function ensure() {
+    const s = getSnap();
+    const cfg = s.visual.softBody;
+    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${s.w}|${s.h}|${cfg.overlap}|${cfg.vortexCopies}|${cfg.flowSpeed}|${cfg.drift}|${cfg.swirl}`;
+    if (sig !== layoutSig) {
+      layoutSig = sig;
+      rebuild();
+    }
   }
 
   function tick() {
     const s = getSnap();
-    syncQueue();
+    const cn = s.visual.canvasClearNonce ?? 0;
+    if (cn !== lastCanvasClearNonce) {
+      lastCanvasClearNonce = cn;
+      layoutSig = '';
+    }
+    ensure();
+
     clearNeutral(ctx, s.w, s.h, s.visual.stageBackground);
     applyMultiplyBlend(ctx, s.visual.multiplyBlend);
-    const floor = s.h * 0.82;
-    const frozen = s.visual.sceneFrozen;
-    const grav = s.visual.softBody.gravity ? 0.28 : 0;
-    const soft = s.visual.softBody.softness;
-    const rep = s.visual.softBody.repulsion * 0.03;
 
-    if (!frozen) {
-      for (const b of stack) {
-        b.vy += grav;
-        b.vx += (Math.random() - 0.5) * rep;
-        b.vy += (Math.random() - 0.5) * rep * 0.5;
-        b.vx *= 0.985;
-        b.vy *= 0.985;
-        b.x += b.vx;
-        b.y += b.vy;
-      }
-      const n = stack.length;
-      const xs = new Float32Array(n);
-      const ys = new Float32Array(n);
-      const rs = new Float32Array(n);
-      for (let i = 0; i < n; i++) {
-        xs[i] = stack[i]!.x;
-        ys[i] = stack[i]!.y;
-        rs[i] = stack[i]!.r;
-      }
-      separateDiscs(xs, ys, rs, 0.5, 5);
-      for (let i = 0; i < n; i++) {
-        const b = stack[i]!;
-        const ox = xs[i]! - b.x;
-        const oy = ys[i]! - b.y;
-        b.x = xs[i]!;
-        b.y = ys[i]!;
-        b.vx += ox * 0.06;
-        b.vy += oy * 0.06;
-      }
-      for (const b of stack) {
-        if (b.y + b.r > floor) {
-          b.y = floor - b.r;
-          b.vy *= -0.18;
-          b.vx *= 0.88;
+    const frozen = s.visual.sceneFrozen;
+    const cfg = s.visual.softBody;
+    const anim = s.animationEnabled ? 1 : 0.42;
+    const t = performance.now();
+    const dt = Math.min(0.034, Math.max(0.008, (t - lastTickTime) / 1000));
+    lastTickTime = t;
+
+    const margin = 90;
+
+    if (!frozen && glyphs.length > 0) {
+      const globalDrift = (0.25 + cfg.drift * 0.55) * anim;
+      fieldAngleVel +=
+        (Math.sin(t * 0.00028 + cfg.drift) * 0.00035 * cfg.swirl - fieldAngleVel * 0.4) * dt;
+      fieldAngle += fieldAngleVel * dt * 60 * globalDrift;
+
+      const followK = 1 - Math.exp(-(2.2 + cfg.flowSpeed * 2.5) * dt);
+      const grid = Math.max(1, cfg.pixelJump);
+
+      for (const g of glyphs) {
+        const { vx: tvx, vy: tvy } = flowVelocityAt(g.x, g.y, t, cfg, s.w, s.h);
+        const tgtVx = tvx * g.speedMul * anim;
+        const tgtVy = tvy * g.speedMul * anim;
+
+        g.vx += (tgtVx - g.vx) * followK;
+        g.vy += (tgtVy - g.vy) * followK;
+
+        const micro = (0.35 + cfg.swirl * 0.25) * anim;
+        g.vx += Math.sin(t * 0.00038 + g.phaseA) * 2.8 * micro * dt;
+        g.vy += Math.cos(t * 0.00033 + g.phaseB) * 2.2 * micro * dt;
+
+        g.x += g.vx * dt;
+        g.y += g.vy * dt;
+
+        wrapGlyph(g, s.w, s.h, margin);
+
+        let jx = Math.sin(t * 0.0009 + g.phaseB) * s.fontSize * 0.018 * micro;
+        let jy = Math.cos(t * 0.00075 + g.phaseA) * s.fontSize * 0.014 * micro;
+        if (grid > 1) {
+          jx = Math.round(jx / grid) * grid;
+          jy = Math.round(jy / grid) * grid;
         }
-        if (b.x - b.r < 0) {
-          b.x = b.r;
-          b.vx *= -0.3;
-        }
-        if (b.x + b.r > s.w) {
-          b.x = s.w - b.r;
-          b.vx *= -0.3;
-        }
+        g.rot += g.vrot * dt;
+        g.vrot += (Math.sin(t * 0.001 + g.phaseA) * 0.0018 * micro - g.vrot * 1.6) * dt;
+        g.scale += (1 + Math.sin(t * 0.00065 + g.phaseC) * 0.028 * micro - g.scale) * (1 - Math.exp(-4 * dt));
+
+        g.jx = jx;
+        g.jy = jy;
       }
     }
 
+    const echoes = Math.max(2, Math.min(12, Math.round(cfg.trailDepth * 0.45)));
+
     ctx.save();
     ctx.font = s.fontCss;
-    for (let i = 0; i < stack.length; i++) {
-      const b = stack[i]!;
-      const speed = Math.hypot(b.vx, b.vy);
-      const squash = clamp(speed * 0.055 + Math.abs(b.vy) * 0.028, 0, 1.35);
-      const sx = 1 + soft * 0.22 * squash;
-      const sy = 1 - soft * 0.28 * squash;
+    ctx.textBaseline = 'alphabetic';
+
+    for (let i = 0; i < glyphs.length; i++) {
+      const g = glyphs[i]!;
+      const ea = edgeAlpha(g.x, g.y, s.w, s.h);
+      if (ea < 0.02) continue;
+
+      const spd = Math.hypot(g.vx, g.vy);
+      const ex = -g.vx / Math.max(1, spd);
+      const ey = -g.vy / Math.max(1, spd);
+
+      for (let k = echoes; k >= 1; k--) {
+        const trail = k / echoes;
+        const lag = (6 + cfg.swirl * 10) * trail;
+        const tx = g.x + g.jx - ex * lag;
+        const ty = g.y + g.jy - ey * lag;
+        const trailRot = g.rot - g.vrot * trail * 0.4;
+        const trailScale = g.scale * (1 - trail * 0.04);
+
+        ctx.save();
+        ctx.translate(tx, ty);
+        ctx.rotate(trailRot);
+        ctx.scale(trailScale, trailScale);
+        ctx.globalAlpha = ea * (0.04 + 0.14 * (1 - trail)) * anim;
+        ctx.fillStyle = colorForGlyph({
+          mode: s.visual.colorMode,
+          monochrome: s.visual.monochromeColor,
+          seed: s.visual.rainbowSeed,
+          index: g.streamIndex + k,
+          total: glyphs.length + echoes,
+        });
+        ctx.fillText(g.char, 0, 0);
+        ctx.restore();
+      }
+
       ctx.save();
-      ctx.translate(b.x, b.y);
-      ctx.scale(sx, sy);
-      drawMetallicLetter(b.char, 0, 0, i);
+      ctx.translate(g.x + g.jx, g.y + g.jy);
+      ctx.rotate(g.rot);
+      ctx.scale(g.scale, g.scale);
+      ctx.globalAlpha = ea * (0.55 + 0.45 * anim);
+      ctx.fillStyle = colorForGlyph({
+        mode: s.visual.colorMode,
+        monochrome: s.visual.monochromeColor,
+        seed: s.visual.rainbowSeed,
+        index: g.streamIndex,
+        total: glyphs.length,
+      });
+      ctx.fillText(g.char, 0, 0);
       ctx.restore();
     }
     ctx.restore();
@@ -188,29 +292,21 @@ export function createSoftBodyMode(
 
   return {
     start() {
-      fontSig = '';
-      stack = [];
+      layoutSig = '';
+      lastCanvasClearNonce = getSnap().visual.canvasClearNonce ?? 0;
+      lastTickTime = performance.now();
+      fieldAngle = Math.random() * Math.PI * 2;
+      fieldAngleVel = 0;
       tickerFn = () => tick();
       gsap.ticker.add(tickerFn);
-      clickHandler = (ev: MouseEvent) => {
-        const s = getSnap();
-        if (s.visual.sceneFrozen || queue.length === 0) return;
-        const r = canvas.getBoundingClientRect();
-        const px = ev.clientX - r.left;
-        const ch = queue.shift()!;
-        const rad = measureR(ch);
-        stack.push({ char: ch, x: px, y: 70 + Math.random() * 20, vx: (Math.random() - 0.5) * 1.2, vy: 0.5, r: rad });
-      };
-      canvas.addEventListener('click', clickHandler);
     },
     stop() {
       if (tickerFn) gsap.ticker.remove(tickerFn);
       tickerFn = null;
-      if (clickHandler) canvas.removeEventListener('click', clickHandler);
-      clickHandler = null;
     },
     dispose() {
       this.stop();
     },
+    interruptInteraction() {},
   };
 }

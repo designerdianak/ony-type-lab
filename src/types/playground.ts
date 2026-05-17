@@ -10,8 +10,6 @@ export type ColorModeId = 'monochrome' | 'rainbow';
 
 export type SymbolInteractionId = 'clickToPaint' | 'alwaysOn';
 
-export type SoftLookId = 'metallic' | 'matte';
-
 export interface LabModeDefinition {
   id: LabModeId;
   label: string;
@@ -24,11 +22,13 @@ export const LAB_MODES: LabModeDefinition[] = [
   { id: 'assembly', label: 'Assembly', shortLabel: 'Asm' },
   { id: 'symbol', label: 'Symbol Overlay', shortLabel: 'Sym' },
   { id: 'elastic', label: 'Elastic Line', shortLabel: 'Elastic' },
-  { id: 'softBody', label: 'Soft Body', shortLabel: 'Soft' },
+  { id: 'softBody', label: 'Soft Flow', shortLabel: 'Soft' },
 ];
 
 export interface ExpansionSettings {
   cloneAmount: number;
+  /** Насколько далеко от центра буквы появляются клоны, px (разброс) */
+  cloneSpawnDistance: number;
   spreadForce: number;
   collisionSpacing: number;
   autoGrow: boolean;
@@ -40,6 +40,8 @@ export interface BloomSettings {
   shapeSize: number;
   growSpeed: number;
   dissolveSpeed: number;
+  /** сила размытия пятен (при включённом Blur), 0 = почти без, 1 = сильное «bloom» как в референсе */
+  shapeBlur: number;
   blur: boolean;
   multiply: boolean;
   motionIntensity: number;
@@ -47,22 +49,27 @@ export interface BloomSettings {
   figureDensity: number;
   /** амплитуда «растительного» покачивания */
   plantOrganic: number;
-  /** как быстро буквы возвращаются, когда поле слабеет */
+  /** как быстро буквы возвращаются на место и проявляются после «чернил» (пружина + микродрейф) */
   letterReturn: number;
   /** баланс: меньше = дольше живёт графика, больше = быстрее исчезает */
   graphicFade: number;
+  /** Насколько далеко буквы «улетают» под давлением графики (множитель силы) */
+  letterScatter: number;
+  /** >1 — овалы качаются медленнее дольше; <1 — быстрее */
+  ovalSwayDuration: number;
 }
 
 export interface AssemblySettings {
   overlap: boolean;
-  /** сколько «копий» слетают к каждой букве (preset 2) */
+  /** призрачные копии при слёте к букве */
   inwardCopies: number;
-  /** радиус старта кольца */
+  /** радиус старта прилёта */
   orbitRadius: number;
-  /** скорость схождения */
+  /** скорость пружинной сборки в слово */
   mergeSpeed: number;
-  /** после сборки — пиксельный дрейф */
+  /** пиксельная сетка микродрейфа (1 = выкл) */
   pixelJump: number;
+  /** амплитуда нестабильного покоя */
   drift: number;
 }
 
@@ -79,10 +86,19 @@ export interface ElasticSettings {
 }
 
 export interface SoftBodySettings {
-  gravity: boolean;
-  softness: number;
-  repulsion: number;
-  look: SoftLookId;
+  overlap: boolean;
+  /** повторы слова в потоке: 1 = одна строка, больше = плотнее «вихрь» */
+  vortexCopies: number;
+  /** глубина «эхо»-слоя в направлении потока */
+  trailDepth: number;
+  /** завихрение поля */
+  swirl: number;
+  /** скорость основного течения */
+  flowSpeed: number;
+  /** пиксельная сетка микросмещения (1 = выкл) */
+  pixelJump: number;
+  /** сила и характер потока */
+  drift: number;
 }
 
 export interface PlaygroundVisualState {
@@ -91,6 +107,8 @@ export interface PlaygroundVisualState {
   letterSpacing: number;
   /** Фон сцены: hex/rgb или слово `transparent` для PNG с альфой */
   stageBackground: string;
+  /** Увеличить, чтобы режимы сбросили нарисованное состояние (без смены настроек) */
+  canvasClearNonce: number;
   multiplyBlend: boolean;
   animationEnabled: boolean;
   /** «Стоп»: зафиксировать кадр для экспорта */
@@ -110,7 +128,8 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
   text: 'Play Type',
   fontSize: 72,
   letterSpacing: 0,
-  stageBackground: '#f4f3f0',
+  stageBackground: '#fafaf9',
+  canvasClearNonce: 0,
   multiplyBlend: false,
   animationEnabled: true,
   sceneFrozen: false,
@@ -119,30 +138,34 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
   rainbowSeed: 1,
   expansion: {
     cloneAmount: 3,
+    cloneSpawnDistance: 14,
     spreadForce: 0.42,
     collisionSpacing: 2,
     autoGrow: false,
     collisionImpulse: 0.72,
   },
   bloom: {
-    shapeSize: 1,
-    growSpeed: 1,
-    dissolveSpeed: 1,
+    shapeSize: 1.08,
+    growSpeed: 1.02,
+    dissolveSpeed: 0.92,
+    shapeBlur: 0.82,
     blur: true,
-    multiply: true,
-    motionIntensity: 0.55,
-    figureDensity: 0.45,
-    plantOrganic: 0.55,
-    letterReturn: 0.12,
-    graphicFade: 0.5,
+    multiply: false,
+    motionIntensity: 0.56,
+    figureDensity: 0.66,
+    plantOrganic: 0.58,
+    letterReturn: 0.44,
+    graphicFade: 0.44,
+    letterScatter: 1.18,
+    ovalSwayDuration: 1.05,
   },
   assembly: {
     overlap: true,
     inwardCopies: 12,
     orbitRadius: 1.15,
-    mergeSpeed: 0.018,
-    pixelJump: 4,
-    drift: 0.35,
+    mergeSpeed: 0.28,
+    pixelJump: 3,
+    drift: 0.42,
   },
   symbol: {
     interaction: 'alwaysOn',
@@ -153,9 +176,12 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
     fillSpacing: 0.48,
   },
   softBody: {
-    gravity: true,
-    softness: 0.45,
-    repulsion: 0.12,
-    look: 'metallic',
+    overlap: true,
+    vortexCopies: 12,
+    trailDepth: 10,
+    swirl: 1.1,
+    flowSpeed: 0.55,
+    pixelJump: 2,
+    drift: 0.48,
   },
 };

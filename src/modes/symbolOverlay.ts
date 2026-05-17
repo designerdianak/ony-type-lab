@@ -33,6 +33,7 @@ export function createSymbolOverlayMode(
   let clickHandler: ((e: MouseEvent) => void) | null = null;
   let moveHandler: ((e: PointerEvent) => void) | null = null;
   let frame = 0;
+  let lastCanvasClearNonce = 0;
 
   function pickSym() {
     return GLYPH_OVERLAY_POOL[Math.floor(Math.random() * GLYPH_OVERLAY_POOL.length)]!;
@@ -86,6 +87,12 @@ export function createSymbolOverlayMode(
 
   function tick() {
     const s = getSnap();
+    const cn = s.visual.canvasClearNonce ?? 0;
+    if (cn !== lastCanvasClearNonce) {
+      lastCanvasClearNonce = cn;
+      layoutSig = '';
+      frame = 0;
+    }
     ensure();
     clearNeutral(ctx, s.w, s.h, s.visual.stageBackground);
     applyMultiplyBlend(ctx, s.visual.multiplyBlend);
@@ -157,6 +164,7 @@ export function createSymbolOverlayMode(
     start() {
       layoutSig = '';
       frame = 0;
+      lastCanvasClearNonce = getSnap().visual.canvasClearNonce ?? 0;
       tickerFn = () => tick();
       gsap.ticker.add(tickerFn);
       clickHandler = (ev: MouseEvent) => {
@@ -189,5 +197,6 @@ export function createSymbolOverlayMode(
     dispose() {
       this.stop();
     },
+    interruptInteraction() {},
   };
 }

@@ -70,6 +70,20 @@ export function PlaygroundCanvas({
   }, [onCanvasReady]);
 
   useEffect(() => {
+    if (!fontReady) return;
+    const onSpaceStop = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return;
+      if (e.repeat) return;
+      if (!(e.target instanceof HTMLElement)) return;
+      if (e.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+      e.preventDefault();
+      controllerRef.current?.interruptInteraction();
+    };
+    window.addEventListener('keydown', onSpaceStop);
+    return () => window.removeEventListener('keydown', onSpaceStop);
+  }, [fontReady]);
+
+  useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !fontReady) return;
     const ctx = canvas.getContext('2d');

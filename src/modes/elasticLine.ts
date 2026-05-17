@@ -2,6 +2,7 @@ import gsap from 'gsap';
 import { colorForGlyph, lerp } from '../utils/colors';
 import { applyMultiplyBlend, clearNeutral } from '../utils/canvas';
 import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
+import { safeReleasePointerCapture } from '../utils/pointerCapture';
 import type { ModeController, ModeSnapshot } from './types';
 
 /**
@@ -23,12 +24,14 @@ export function createElasticLineMode(
   let initBy: number[] = [];
   let layoutSig = '';
   let dragIdx = -1;
+  let capturePointerId: number | null = null;
   let grabOx = 0;
   let grabOy = 0;
   let tickerFn: (() => void) | null = null;
   let down: ((e: PointerEvent) => void) | null = null;
   let move: ((e: PointerEvent) => void) | null = null;
   let up: (() => void) | null = null;
+  let lastCanvasClearNonce = 0;
 
   function rebuild() {
     const s = getSnap();
@@ -178,7 +181,14 @@ export function createElasticLineMode(
 
   function tick() {
     const s = getSnap();
-    ensure();
+    const cn = s.visual.canvasClearNonce ?? 0;
+    if (cn !== lastCanvasClearNonce) {
+      lastCanvasClearNonce = cn;
+      layoutSig = '';
+      rebuild();
+    } else {
+      ensure();
+    }
     const frozen = s.visual.sceneFrozen;
     if (!frozen) relaxRope();
 
@@ -236,6 +246,7 @@ export function createElasticLineMode(
   return {
     start() {
       layoutSig = '';
+      lastCanvasClearNonce = getSnap().visual.canvasClearNonce ?? 0;
       tickerFn = () => tick();
       gsap.ticker.add(tickerFn);
       down = (e: PointerEvent) => {
@@ -249,6 +260,7 @@ export function createElasticLineMode(
           grabOy = py - by[dragIdx]!;
         }
         canvas.setPointerCapture(e.pointerId);
+        capturePointerId = e.pointerId;
       };
       move = (e: PointerEvent) => {
         if (dragIdx < 0 || getSnap().visual.sceneFrozen) return;
@@ -259,6 +271,8 @@ export function createElasticLineMode(
         by[dragIdx] = py - grabOy;
       };
       up = () => {
+        safeReleasePointerCapture(canvas, capturePointerId);
+        capturePointerId = null;
         dragIdx = -1;
       };
       canvas.addEventListener('pointerdown', down);
@@ -269,6 +283,9 @@ export function createElasticLineMode(
       window.addEventListener('pointercancel', up);
     },
     stop() {
+      safeReleasePointerCapture(canvas, capturePointerId);
+      capturePointerId = null;
+      dragIdx = -1;
       if (tickerFn) gsap.ticker.remove(tickerFn);
       tickerFn = null;
       if (down) canvas.removeEventListener('pointerdown', down);
@@ -283,6 +300,9 @@ export function createElasticLineMode(
     },
     dispose() {
       this.stop();
+    },
+    interruptInteraction() {
+      up?.();
     },
   };
 }
