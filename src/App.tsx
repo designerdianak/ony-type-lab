@@ -29,13 +29,13 @@ function modeHint(mode: LabModeId): string {
     case 'bloom':
       return 'Зажми и веди — живые формы; над буквой — мягкое растворение. Очистить экран — только рисунок';
     case 'assembly':
-      return 'Копии с глитч-смещением и микро-орбитой, сходятся к букве';
+      return 'Буквы слетают в слово и остаются слегка нестабильными';
     case 'symbol':
       return 'Оверлей цифр/знаков; «Всегда» или клик/наведение. Стоп — заморозить';
     case 'elastic':
       return 'Тяни букву — копии в зазорах; после отпускания излом сохраняется';
     case 'softBody':
-      return 'Клик по холсту — буквы по очереди падают (псевдо‑3D)';
+      return 'Непрерывный поток букв по полю; эхо-след в направлении движения';
     default:
       return '';
   }
@@ -463,7 +463,7 @@ export default function App() {
               onChange={(v) => setVisual((s) => ({ ...s, assembly: { ...s.assembly, inwardCopies: v } }))}
             />
             <LabeledSlider
-              label="Радиус орбиты"
+              label="Радиус прилёта"
               min={0.4}
               max={2.2}
               step={0.02}
@@ -472,12 +472,12 @@ export default function App() {
               onChange={(v) => setVisual((s) => ({ ...s, assembly: { ...s.assembly, orbitRadius: v } }))}
             />
             <LabeledSlider
-              label="Скорость слияния"
-              min={0.006}
-              max={0.045}
-              step={0.001}
+              label="Скорость сборки"
+              min={0.08}
+              max={0.65}
+              step={0.01}
               value={visual.assembly.mergeSpeed}
-              format={(n) => n.toFixed(3)}
+              format={(n) => n.toFixed(2)}
               onChange={(v) => setVisual((s) => ({ ...s, assembly: { ...s.assembly, mergeSpeed: v } }))}
             />
             <LabeledSlider
@@ -559,45 +559,63 @@ export default function App() {
 
         {mode === 'softBody' && (
           <>
-            <div className="lab__row">
-              <RoundButton
-                active={visual.softBody.look === 'metallic'}
-                onClick={() => setVisual((s) => ({ ...s, softBody: { ...s.softBody, look: 'metallic' } }))}
-              >
-                Metallic
-              </RoundButton>
-              <RoundButton
-                active={visual.softBody.look === 'matte'}
-                onClick={() => setVisual((s) => ({ ...s, softBody: { ...s.softBody, look: 'matte' } }))}
-              >
-                Matte
-              </RoundButton>
-            </div>
-            <div className="lab__row">
-              <RoundToggle
-                label="Gravity"
-                pressed={visual.softBody.gravity}
-                onChange={(v) => setVisual((s) => ({ ...s, softBody: { ...s.softBody, gravity: v } }))}
-              />
-            </div>
             <LabeledSlider
-              label="Softness"
-              min={0}
+              label="Копии вихря"
+              min={1}
+              max={16}
+              step={1}
+              value={visual.softBody.vortexCopies}
+              onChange={(v) => setVisual((s) => ({ ...s, softBody: { ...s.softBody, vortexCopies: v } }))}
+            />
+            <LabeledSlider
+              label="Глубина следа"
+              min={4}
+              max={24}
+              step={1}
+              value={visual.softBody.trailDepth}
+              onChange={(v) => setVisual((s) => ({ ...s, softBody: { ...s.softBody, trailDepth: v } }))}
+            />
+            <LabeledSlider
+              label="Завихрение потока"
+              min={0.4}
+              max={2.2}
+              step={0.02}
+              value={visual.softBody.swirl}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) => setVisual((s) => ({ ...s, softBody: { ...s.softBody, swirl: v } }))}
+            />
+            <LabeledSlider
+              label="Скорость потока"
+              min={0.15}
+              max={1.2}
+              step={0.02}
+              value={visual.softBody.flowSpeed}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) => setVisual((s) => ({ ...s, softBody: { ...s.softBody, flowSpeed: v } }))}
+            />
+            <LabeledSlider
+              label="Pixel jump"
+              min={1}
+              max={12}
+              value={visual.softBody.pixelJump}
+              onChange={(v) => setVisual((s) => ({ ...s, softBody: { ...s.softBody, pixelJump: v } }))}
+            />
+            <LabeledSlider
+              label="Drift"
+              min={0.05}
               max={1}
               step={0.01}
-              value={visual.softBody.softness}
+              value={visual.softBody.drift}
               format={(n) => n.toFixed(2)}
-              onChange={(v) => setVisual((s) => ({ ...s, softBody: { ...s.softBody, softness: v } }))}
+              onChange={(v) => setVisual((s) => ({ ...s, softBody: { ...s.softBody, drift: v } }))}
             />
-            <LabeledSlider
-              label="Repulsion"
-              min={0}
-              max={0.8}
-              step={0.01}
-              value={visual.softBody.repulsion}
-              format={(n) => n.toFixed(2)}
-              onChange={(v) => setVisual((s) => ({ ...s, softBody: { ...s.softBody, repulsion: v } }))}
-            />
+            <div className="lab__row">
+              <RoundToggle
+                label="Overlap"
+                pressed={visual.softBody.overlap}
+                onChange={(v) => setVisual((s) => ({ ...s, softBody: { ...s.softBody, overlap: v } }))}
+              />
+            </div>
           </>
         )}
       </aside>

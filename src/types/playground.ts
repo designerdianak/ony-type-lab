@@ -10,8 +10,6 @@ export type ColorModeId = 'monochrome' | 'rainbow';
 
 export type SymbolInteractionId = 'clickToPaint' | 'alwaysOn';
 
-export type SoftLookId = 'metallic' | 'matte';
-
 export interface LabModeDefinition {
   id: LabModeId;
   label: string;
@@ -24,7 +22,7 @@ export const LAB_MODES: LabModeDefinition[] = [
   { id: 'assembly', label: 'Assembly', shortLabel: 'Asm' },
   { id: 'symbol', label: 'Symbol Overlay', shortLabel: 'Sym' },
   { id: 'elastic', label: 'Elastic Line', shortLabel: 'Elastic' },
-  { id: 'softBody', label: 'Soft Body', shortLabel: 'Soft' },
+  { id: 'softBody', label: 'Soft Flow', shortLabel: 'Soft' },
 ];
 
 export interface ExpansionSettings {
@@ -63,14 +61,15 @@ export interface BloomSettings {
 
 export interface AssemblySettings {
   overlap: boolean;
-  /** сколько «копий» слетают к каждой букве (preset 2) */
+  /** призрачные копии при слёте к букве */
   inwardCopies: number;
-  /** радиус старта кольца */
+  /** радиус старта прилёта */
   orbitRadius: number;
-  /** скорость схождения */
+  /** скорость пружинной сборки в слово */
   mergeSpeed: number;
-  /** после сборки — пиксельный дрейф */
+  /** пиксельная сетка микродрейфа (1 = выкл) */
   pixelJump: number;
+  /** амплитуда нестабильного покоя */
   drift: number;
 }
 
@@ -87,10 +86,19 @@ export interface ElasticSettings {
 }
 
 export interface SoftBodySettings {
-  gravity: boolean;
-  softness: number;
-  repulsion: number;
-  look: SoftLookId;
+  overlap: boolean;
+  /** повторы слова в потоке: 1 = одна строка, больше = плотнее «вихрь» */
+  vortexCopies: number;
+  /** глубина «эхо»-слоя в направлении потока */
+  trailDepth: number;
+  /** завихрение поля */
+  swirl: number;
+  /** скорость основного течения */
+  flowSpeed: number;
+  /** пиксельная сетка микросмещения (1 = выкл) */
+  pixelJump: number;
+  /** сила и характер потока */
+  drift: number;
 }
 
 export interface PlaygroundVisualState {
@@ -142,7 +150,7 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
     dissolveSpeed: 0.92,
     shapeBlur: 0.82,
     blur: true,
-    multiply: true,
+    multiply: false,
     motionIntensity: 0.56,
     figureDensity: 0.66,
     plantOrganic: 0.58,
@@ -155,9 +163,9 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
     overlap: true,
     inwardCopies: 12,
     orbitRadius: 1.15,
-    mergeSpeed: 0.018,
-    pixelJump: 4,
-    drift: 0.35,
+    mergeSpeed: 0.28,
+    pixelJump: 3,
+    drift: 0.42,
   },
   symbol: {
     interaction: 'alwaysOn',
@@ -168,9 +176,12 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
     fillSpacing: 0.48,
   },
   softBody: {
-    gravity: true,
-    softness: 0.45,
-    repulsion: 0.12,
-    look: 'metallic',
+    overlap: true,
+    vortexCopies: 12,
+    trailDepth: 10,
+    swirl: 1.1,
+    flowSpeed: 0.55,
+    pixelJump: 2,
+    drift: 0.48,
   },
 };

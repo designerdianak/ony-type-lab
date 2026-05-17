@@ -5,28 +5,43 @@ import { safeReleasePointerCapture } from '../utils/pointerCapture';
 import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
 import type { ModeController, ModeSnapshot } from './types';
 
-/** Мягкое «распухание» без рывка в начале и конце */
+/** Мягкое распухание с индивидуальным таймингом */
 function easeOutBloom(t: number): number {
   const u = Math.min(1, Math.max(0, t));
-  return 1 - Math.pow(1 - u, 2.05);
+  return 1 - Math.pow(1 - u, 2.1);
 }
 
-type Shape = {
-  kind: 0 | 1 | 2;
+/** 0 = ellipse, 1 = stretched ellipse, 2 = soft rect */
+type BrushKind = 0 | 1 | 2;
+
+type BrushParticle = {
+  kind: BrushKind;
   ax: number;
   ay: number;
-  /** текущие размеры (растут равномерно к tw/th) */
+  vx: number;
+  vy: number;
   w: number;
   h: number;
   tw: number;
   th: number;
   rot: number;
+  rotVel: number;
+  rotOffset: number;
+  /** направление вращения при росте */
+  growSpin: number;
   born: number;
-  sway: number;
+  /** мс задержки роста — асинхронность */
+  growDelay: number;
+  /** множитель времени жизни */
+  lifeScale: number;
+  wobbleA: number;
+  wobbleB: number;
+  wobbleC: number;
   hueA: number;
   hueB: number;
-  peak: number;
-  stemPhase: number;
+  /** 0…1 — глубина слоя (прозрачность) */
+  depth: number;
+  aspect: number;
 };
 
 type Home = {
@@ -41,15 +56,11 @@ type Home = {
   h: number;
   bl: number;
   melt: number;
-  jx: number;
-  jy: number;
-  jvx: number;
-  jvy: number;
-  /** Плавная видимость: падает пока рядом «чернила» графики, восстанавливается когда они ушли */
   visAlpha: number;
-  /** Наклон при разлёте (рад), как в референсе */
   rot: number;
   vrot: number;
+  /** уникальная фаза для микродвижения в покое */
+  idlePhase: number;
 };
 
 export function createBloomPaintMode(
@@ -57,15 +68,14 @@ export function createBloomPaintMode(
   ctx: CanvasRenderingContext2D,
   getSnap: () => ModeSnapshot,
 ): ModeController {
-  let shapes: Shape[] = [];
+  let particles: BrushParticle[] = [];
   let painting = false;
   let capturePointerId: number | null = null;
-  let lastPaint = 0;
+  let lastEmit = 0;
   let prevMouseX = 0;
   let prevMouseY = 0;
   let lastMouseX = 0;
   let lastMouseY = 0;
-  /** Лаг курсора — «память» движения кисти */
   let brushLagX = 0;
   let brushLagY = 0;
   let paletteHue = 0;
@@ -81,7 +91,7 @@ export function createBloomPaintMode(
     const ox = (s.w - tw) * 0.5;
     const oy = s.h * 0.55;
     const lays = layoutGlyphs(ctx, s.text, s.fontCss, s.fontSize, s.letterSpacing, ox, oy);
-    homes = lays.map((g) => ({
+    homes = lays.map((g, i) => ({
       x: g.x,
       y: g.y,
       ox: 0,
@@ -93,13 +103,10 @@ export function createBloomPaintMode(
       h: g.h,
       bl: g.baseline,
       melt: 0,
-      jx: 0,
-      jy: 0,
-      jvx: 0,
-      jvy: 0,
       visAlpha: 1,
       rot: 0,
       vrot: 0,
+      idlePhase: i * 1.7 + Math.random() * 2,
     }));
   }
 
@@ -116,11 +123,10 @@ export function createBloomPaintMode(
     const n = getSnap().visual.canvasClearNonce ?? 0;
     if (n !== lastClearNonce) {
       lastClearNonce = n;
-      shapes = [];
+      particles = [];
       for (const h of homes) {
         h.ox = h.oy = h.vx = h.vy = 0;
         h.melt = 0;
-        h.jx = h.jy = h.jvx = h.jvy = 0;
         h.visAlpha = 1;
         h.rot = 0;
         h.vrot = 0;
@@ -130,28 +136,57 @@ export function createBloomPaintMode(
     }
   }
 
-  /** Давление от фигур в точке (px, py) */
+  function particleCenter(sh: BrushParticle, t: number, b: ReturnType<typeof getSnap>['visual']['bloom']) {
+    const swayT = (t + sh.wobbleC * 400) / Math.max(0.35, b.ovalSwayDuration);
+    const plant = b.plantOrganic * b.motionIntensity;
+    const driftX =
+      Math.sin(swayT * 0.00048 + sh.wobbleA) * 9 * plant +
+      Math.cos(swayT * 0.00031 + sh.wobbleB) * 4 * plant;
+    const driftY =
+      Math.sin(swayT * 0.00038 + sh.wobbleB) * 7 * plant +
+      sh.vy * 0.08;
+    return { sx: sh.ax + driftX, sy: sh.ay + driftY };
+  }
+
+  /** «Присутствие» фигуры: растёт с размером, падает при dissolve */
+  function particlePresence(sh: BrushParticle, t: number, b: ReturnType<typeof getSnap>['visual']['bloom']) {
+    const age = (t - sh.born) / 1000;
+    const growAge = Math.max(0, t - sh.born - sh.growDelay) / 1000;
+    const grow = easeOutBloom(Math.min(1, growAge * (0.72 + b.growSpeed * 0.38)));
+    const fadeStart = 0.26 + (1 - b.graphicFade) * 0.48;
+    const dissolve = Math.max(0, 1 - Math.max(0, age - fadeStart) * b.dissolveSpeed * 0.42);
+    return dissolve * (0.08 + grow * 0.92);
+  }
+
   function fieldPressure(px: number, py: number, t: number): number {
     const b = getSnap().visual.bloom;
     let p = 0;
-    for (const sh of shapes) {
-      const age = (t - sh.born) / 1000;
-      const dissolve = Math.max(0, 1 - Math.max(0, age - 0.25) * 0.55);
-      const swayT = t / Math.max(0.35, b.ovalSwayDuration);
-      const plant = b.plantOrganic;
-      const swayY = Math.sin(swayT * 0.0007 + sh.stemPhase) * 10 * plant;
-      const sx = sh.ax + Math.sin(t * 0.0009 + sh.stemPhase) * 8;
-      const sy = sh.ay + swayY * 0.35;
-      const reach = Math.max(48, 26 + (sh.w + sh.h) * 0.38);
-      const dx = px - sx;
-      const dy = py - sy;
-      const d = Math.hypot(dx, dy);
-      p += smoothstep(reach, 0, d) * (0.2 + dissolve * 0.85);
+    for (const sh of particles) {
+      const presence = particlePresence(sh, t, b);
+      if (presence < 0.02) continue;
+      const { sx, sy } = particleCenter(sh, t, b);
+      const reach = Math.max(40, 20 + (sh.w + sh.h) * 0.4);
+      const d = Math.hypot(px - sx, py - sy);
+      p += smoothstep(reach, 0, d) * presence * (0.65 + sh.depth * 0.35);
     }
     return Math.min(2.2, p);
   }
 
-  /** Попадание курсора в bbox глифа (measureText actualBoundingBox), в той же точке пера, что и fillText */
+  function inkAtLetterHome(h: Home, t: number): number {
+    const cx = h.x + h.w * 0.5;
+    const cy = h.bl - h.h * 0.42;
+    return Math.min(
+      1.6,
+      Math.max(
+        fieldPressure(cx, cy, t),
+        fieldPressure(cx - 8, cy, t),
+        fieldPressure(cx + 8, cy, t),
+        fieldPressure(cx, cy - 8, t),
+        fieldPressure(cx, cy + 8, t),
+      ),
+    );
+  }
+
   function glyphHitTight(mx: number, my: number, fontCss: string, h: Home, penX: number, penY: number): boolean {
     ctx.save();
     ctx.font = fontCss;
@@ -162,103 +197,242 @@ export function createBloomPaintMode(
     const aba = m.actualBoundingBoxAscent ?? h.h * 0.72;
     const abd = m.actualBoundingBoxDescent ?? h.h * 0.22;
     ctx.restore();
-    const left = penX - abl;
-    const right = penX + abr;
-    const top = penY - aba;
-    const bottom = penY + abd;
-    return mx >= left && mx <= right && my >= top && my <= bottom;
+    return (
+      mx >= penX - abl &&
+      mx <= penX + abr &&
+      my >= penY - aba &&
+      my <= penY + abd
+    );
   }
 
-  function spawnShape(px: number, py: number) {
+  function pickBrushKind(): BrushKind {
+    const r = Math.random();
+    if (r < 0.58) return 0;
+    if (r < 0.88) return 1;
+    return 2;
+  }
+
+  function spawnParticle(px: number, py: number, streamBias = 0) {
     const s = getSnap();
     const b = s.visual.bloom;
     const now = performance.now();
-    const kind = (Math.floor(Math.random() * 3) % 3) as 0 | 1 | 2;
-    const hues = randomVividPalette(s.visual.rainbowSeed + paletteHue * 0.01, 4);
+    const kind = pickBrushKind();
+    const hues = randomVividPalette(s.visual.rainbowSeed + paletteHue * 0.01, 5);
     const pick = hues[Math.floor(Math.random() * hues.length)]!;
     const m = /hsla\(([\d.]+),/i.exec(pick);
     const ha = m ? Number(m[1]) : Math.random() * 360;
-    const peak = 0.55 + Math.random() * 0.35;
-    const tw = (9 + Math.random() * 17) * b.shapeSize;
-    const th = (30 + peak * 78) * b.shapeSize * (0.88 + Math.random() * 0.32);
-    const jxa = (Math.random() - 0.5) * 12;
-    const jya = (Math.random() - 0.5) * 9;
     paletteHue += 1;
-    shapes.push({
+
+    const scale = (0.82 + Math.random() * 0.42) * b.shapeSize;
+    const aspect = kind === 1 ? 1.35 + Math.random() * 0.85 : 0.75 + Math.random() * 0.55;
+    const tw = (8 + Math.random() * 16) * scale * (kind === 1 ? 1.15 : 1);
+    const th = (26 + Math.random() * 52) * scale * aspect;
+
+    const jx = (Math.random() - 0.5) * 14;
+    const jy = (Math.random() - 0.5) * 11;
+
+    particles.push({
       kind,
-      ax: px + jxa,
-      ay: py + jya,
-      w: 0.004,
-      h: 0.004,
+      ax: px + jx,
+      ay: py + jy,
+      vx: (Math.random() - 0.5) * 1.2 + streamBias * 0.4,
+      vy: (Math.random() - 0.5) * 1.0 + streamBias * 0.25,
+      w: 0.003,
+      h: 0.003,
       tw,
       th,
-      rot: (Math.random() - 0.5) * 0.22,
+      rot: (Math.random() - 0.5) * Math.PI,
+      rotVel: (Math.random() - 0.5) * 0.0035,
+      rotOffset: (Math.random() - 0.5) * 0.5,
+      growSpin: Math.random() < 0.5 ? -1 : 1,
       born: now,
-      sway: Math.random() * Math.PI * 2,
+      growDelay: Math.random() * 140 + streamBias * 30,
+      lifeScale: 0.82 + Math.random() * 0.45,
+      wobbleA: Math.random() * Math.PI * 2,
+      wobbleB: Math.random() * Math.PI * 2,
+      wobbleC: Math.random() * 1000,
       hueA: ha,
-      hueB: ha + 40 + Math.random() * 80,
-      peak,
-      stemPhase: Math.random() * Math.PI * 2,
+      hueB: ha + 35 + Math.random() * 90,
+      depth: 0.35 + Math.random() * 0.65,
+      aspect,
     });
   }
 
-  /** Формы как раньше: эллипс / скруглённые столбы + растительное покачивание */
-  function drawShape(sh: Shape, t: number) {
+  /** Непрерывный поток вдоль сегмента кисти */
+  function emitStream(x0: number, y0: number, x1: number, y1: number, density: number) {
+    const dist = Math.hypot(x1 - x0, y1 - y0);
+    const step = lerp(14, 5, density);
+    const n = Math.max(1, Math.ceil(dist / step));
+    const dx = (x1 - x0) / n;
+    const dy = (y1 - y0) / n;
+    const streamBias = Math.min(1.8, dist * 0.04);
+    for (let i = 0; i <= n; i++) {
+      if (i > 0 && Math.random() > 0.35 + density * 0.55) continue;
+      spawnParticle(x0 + dx * i, y0 + dy * i, streamBias);
+      if (density > 0.5 && Math.random() < 0.22 + density * 0.28) {
+        spawnParticle(
+          x0 + dx * i + (Math.random() - 0.5) * 10,
+          y0 + dy * i + (Math.random() - 0.5) * 8,
+          streamBias * 0.6,
+        );
+      }
+    }
+  }
+
+  function updateParticles(t: number, dt: number, frozen: boolean) {
+    if (frozen) return;
+    const b = getSnap().visual.bloom;
+    const mot = b.motionIntensity;
+    const brushVx = (lastMouseX - prevMouseX) / Math.max(dt, 0.001);
+    const brushVy = (lastMouseY - prevMouseY) / Math.max(dt, 0.001);
+    const flowMag = Math.min(1, Math.hypot(brushVx, brushVy) * 0.08);
+
+    for (const sh of particles) {
+      const idle = 0.35 + mot * 0.45;
+
+      sh.vx +=
+        (Math.sin(t * 0.00042 + sh.wobbleA) * 3.2 +
+          Math.cos(t * 0.00029 + sh.wobbleB) * 2.1 +
+          brushVx * 0.12 * (painting ? 1 : 0.15)) *
+        idle *
+        dt;
+      sh.vy +=
+        (Math.cos(t * 0.00036 + sh.wobbleB) * 2.8 +
+          Math.sin(t * 0.00024 + sh.wobbleA) * 1.6 +
+          brushVy * 0.12 * (painting ? 1 : 0.15)) *
+        idle *
+        dt;
+
+      sh.vx *= 1 - (1.4 + flowMag * 0.8) * dt;
+      sh.vy *= 1 - (1.4 + flowMag * 0.8) * dt;
+
+      sh.ax += sh.vx * dt;
+      sh.ay += sh.vy * dt;
+
+      sh.rotVel += Math.sin(t * 0.0011 + sh.wobbleB) * 0.0014 * idle * dt;
+      sh.rotVel *= 1 - 2.2 * dt;
+      sh.rot += sh.rotVel * dt;
+
+      const growAge = Math.max(0, t - sh.born - sh.growDelay) / 1000;
+      const rawGrow = Math.min(1, growAge * (0.72 + b.growSpeed * 0.38));
+      const grow = easeOutBloom(rawGrow);
+      sh.w = lerp(0.003, sh.tw, grow);
+      sh.h = lerp(0.003, sh.th, grow);
+
+      if (grow < 0.98) {
+        sh.rotVel += sh.growSpin * (0.0028 + grow * 0.0055) * (0.85 + mot * 0.35);
+      }
+    }
+  }
+
+  function drawParticle(sh: BrushParticle, t: number) {
     const s = getSnap();
     const b = s.visual.bloom;
-    const frozen = s.visual.sceneFrozen;
     const age = (t - sh.born) / 1000;
-    const rawGrow = Math.min(1, age * (0.88 + b.growSpeed * 0.32));
-    const grow = easeOutBloom(rawGrow);
-    if (!frozen) {
-      sh.w = lerp(0.004, sh.tw, grow);
-      sh.h = lerp(0.004, sh.th, grow);
-    }
     const fadeStart = 0.26 + (1 - b.graphicFade) * 0.48;
     const dissolve = Math.max(0, 1 - Math.max(0, age - fadeStart) * b.dissolveSpeed * 0.42);
-    const swayT = t / Math.max(0.35, b.ovalSwayDuration);
-    const plant = b.plantOrganic;
-    const bend = Math.sin(swayT * 0.001 + sh.stemPhase) * 0.1 * plant;
-    const swaySlow = Math.sin(swayT * 0.00052 + sh.sway) * 11 * plant * b.motionIntensity;
-    const swayFast = Math.cos(swayT * 0.00165 + sh.sway * 1.3) * 4 * plant;
-    if (!frozen) sh.rot += bend * 0.014 + swayFast * 0.00035;
-    const swayX = swaySlow + swayFast;
-    const swayY = Math.sin(swayT * 0.00065 + sh.stemPhase) * 8 * plant;
+    const { sx, sy } = particleCenter(sh, t, b);
+    const growAge = Math.max(0, t - sh.born - sh.growDelay) / 1000;
+    const rawGrow = Math.min(1, growAge * (0.72 + b.growSpeed * 0.38));
+    const grow = easeOutBloom(rawGrow);
+    const drawRot =
+      sh.rot + sh.rotOffset + Math.sin(t * 0.00085 + sh.wobbleA) * 0.08 + grow * sh.growSpin * 0.12;
 
-    const g = ctx.createLinearGradient(
-      -sh.w * 1.05 - swayX * 0.12,
-      -sh.h * 1.05 + swayY * 0.2,
-      sh.w * 1.05 + swayX * 0.12,
-      sh.h * 1.05 + swayY * 0.2,
-    );
+    const g = ctx.createLinearGradient(-sh.w, -sh.h, sh.w, sh.h);
     const midH = (sh.hueA + sh.hueB) * 0.5;
-    g.addColorStop(0, hsla(sh.hueA, 96, 55, 0.98 * dissolve));
-    g.addColorStop(0.48, hsla(midH, 94, 50, 0.95 * dissolve));
-    g.addColorStop(1, hsla(sh.hueB, 92, 45, 0.92 * dissolve));
+    const layerA = (0.72 + sh.depth * 0.22) * dissolve;
+    g.addColorStop(0, hsla(sh.hueA, 96, 58, 0.88 * layerA));
+    g.addColorStop(0.5, hsla(midH, 94, 52, 0.84 * layerA));
+    g.addColorStop(1, hsla(sh.hueB, 92, 48, 0.8 * layerA));
+
     ctx.save();
-    ctx.translate(sh.ax + swayX, sh.ay + swayY * 0.35);
-    ctx.rotate(sh.rot);
-    ctx.globalAlpha = 0.82 + 0.18 * Math.pow(dissolve, 0.75);
-    const prevComp = ctx.globalCompositeOperation;
-    ctx.globalCompositeOperation = 'multiply';
+    ctx.translate(sx, sy);
+    ctx.rotate(drawRot);
+    ctx.globalAlpha = (0.62 + sh.depth * 0.32) * Math.pow(dissolve, 0.82);
+    ctx.globalCompositeOperation = 'source-over';
     ctx.fillStyle = g;
     ctx.beginPath();
+
     if (sh.kind === 0) {
-      ctx.ellipse(0, 0, sh.w * 0.52, sh.h * 0.48, bend * 0.35, 0, Math.PI * 2);
+      ctx.ellipse(0, 0, sh.w * 0.5, sh.h * 0.48, 0, 0, Math.PI * 2);
     } else if (sh.kind === 1) {
-      const rw = sh.w;
-      const rh = sh.h;
-      const rr = Math.min(rw, rh) * 0.32;
-      ctx.roundRect(-rw * 0.5, -rh * 0.5, rw, rh, rr);
+      const stretch = sh.aspect;
+      ctx.ellipse(0, 0, sh.w * 0.52 * stretch, sh.h * 0.44, sh.rotOffset * 0.3, 0, Math.PI * 2);
     } else {
-      const rw = sh.w * 1.06;
-      const rh = sh.h * 0.9;
-      const rr = Math.min(rw, rh) * 0.46;
+      const rw = sh.w * (0.92 + Math.sin(sh.wobbleA) * 0.06);
+      const rh = sh.h * (0.9 + Math.cos(sh.wobbleB) * 0.05);
+      const rr = Math.min(rw, rh) * 0.38;
       ctx.roundRect(-rw * 0.5, -rh * 0.5, rw, rh, rr);
     }
+
     ctx.fill();
-    ctx.globalCompositeOperation = prevComp;
     ctx.restore();
+  }
+
+  function updateLetters(t: number, dt: number, frozen: boolean) {
+    if (frozen) return;
+    const b = getSnap().visual.bloom;
+    const fontCss = getSnap().fontCss;
+    const ret = b.letterReturn;
+    const mot = b.motionIntensity;
+    const scatter = Math.max(0.15, b.letterScatter);
+    const meltK = 1 - Math.exp(-(4 + mot * 3) * dt);
+    const mx = lastMouseX;
+    const my = lastMouseY;
+
+    for (const h of homes) {
+      const cx = h.x + h.w * 0.5;
+      const cy = h.bl - h.h * 0.42;
+      const onGlyph = painting && glyphHitTight(mx, my, fontCss, h, h.x, h.bl);
+
+      const inkPr = inkAtLetterHome(h, t);
+      const touchBoost = onGlyph ? 0.22 + fieldPressure(mx, my, t) * 0.35 : 0;
+      const ink = Math.min(1.65, inkPr + touchBoost);
+
+      const gpx =
+        (fieldPressure(cx + 11, cy, t) - fieldPressure(cx - 11, cy, t)) * 0.5;
+      const gpy =
+        (fieldPressure(cx, cy + 11, t) - fieldPressure(cx, cy - 11, t)) * 0.5;
+
+      const tgtMelt = Math.min(1, ink * 0.62 + smoothstep(0.12, 0.85, ink) * 0.38);
+      h.melt += (tgtMelt - h.melt) * meltK;
+
+      const alphaTarget = 1 - smoothstep(0.08, 0.38, ink);
+      const alphaK =
+        alphaTarget < h.visAlpha
+          ? 1 - Math.exp(-(16 + mot * 12) * dt)
+          : 1 - Math.exp(-(5 + ret * 10) * dt);
+      h.visAlpha += (alphaTarget - h.visAlpha) * alphaK;
+
+      const pushK = ink * scatter * (0.42 + h.melt * 0.35) * (0.35 + mot * 0.25);
+      h.vx += gpx * pushK * 52 * dt;
+      h.vy += gpy * pushK * 52 * dt;
+
+      if (onGlyph) {
+        const dx = cx - mx;
+        const dy = cy - my;
+        const d = Math.hypot(dx, dy) + 1;
+        const repel = pushK * (1.1 + h.melt * 0.4);
+        h.vx += (dx / d) * repel * 38 * dt;
+        h.vy += (dy / d) * repel * 38 * dt;
+      }
+
+      const springK = (3.2 + ret * 11) * (1 - smoothstep(0, 0.5, ink) * 0.45);
+      const damp = 3.8 + ret * 5 + h.melt * 2 + ink * 0.6;
+      h.vx += (-h.ox * springK - h.vx * damp) * dt;
+      h.vy += (-h.oy * springK - h.vy * damp) * dt;
+      h.ox += h.vx * dt;
+      h.oy += h.vy * dt;
+
+      const idle = (1 - smoothstep(0, 0.2, ink)) * scatter * 0.28 * mot;
+      h.vx += Math.sin(t * 0.00035 + h.idlePhase) * 1.8 * idle * dt;
+      h.vy += Math.cos(t * 0.00031 + h.idlePhase * 1.3) * 1.5 * idle * dt;
+
+      const tumble = scatter * (0.65 + mot * 0.22) * h.melt;
+      h.vrot += (gpx * 0.5 + gpy * -0.18) * tumble * dt * 14;
+      h.vrot += (-h.rot * (1.1 + ret * 2) - h.vrot * (1.8 + ret * 1.1)) * dt;
+      h.rot += h.vrot * dt;
+    }
   }
 
   function tick() {
@@ -267,8 +441,7 @@ export function createBloomPaintMode(
     syncCanvasClear();
 
     clearNeutral(ctx, s.w, s.h, s.visual.stageBackground);
-    const mult = s.visual.multiplyBlend || s.visual.bloom.multiply;
-    applyMultiplyBlend(ctx, mult);
+    applyMultiplyBlend(ctx, false);
 
     const t = performance.now();
     const frozen = s.visual.sceneFrozen;
@@ -277,161 +450,41 @@ export function createBloomPaintMode(
     lastTickTime = t;
 
     if (!frozen) {
-      shapes = shapes.filter((sh) => t - sh.born < 5200 + b.graphicFade * 4000);
+      const lifeMs = 5200 + b.graphicFade * 4200;
+      particles = particles.filter((sh) => t - sh.born < lifeMs * sh.lifeScale);
     }
 
-    const lagK = painting ? 1 - Math.exp(-(2.8 + b.motionIntensity * 3.8) * dt) : 1 - Math.exp(-1.35 * dt);
+    const lagK = painting ? 1 - Math.exp(-(2.6 + b.motionIntensity * 3.5) * dt) : 1 - Math.exp(-1.2 * dt);
     brushLagX += (lastMouseX - brushLagX) * lagK;
     brushLagY += (lastMouseY - brushLagY) * lagK;
 
-    ctx.save();
-    if (s.visual.bloom.blur) {
-      const sb = s.visual.bloom.shapeBlur ?? 0.78;
-      ctx.filter = `blur(${4 + sb * 14}px)`;
-    } else ctx.filter = 'none';
-    for (const sh of shapes) drawShape(sh, t);
-    ctx.restore();
+    updateParticles(t, dt, frozen);
 
-    const mot = b.motionIntensity;
-    const meltFollow = 1 - Math.exp(-(3.6 + mot * 2.8) * dt);
-
-    if (!frozen) {
-      const fontCss = s.fontCss;
-      const ret = b.letterReturn;
-      for (const h of homes) {
-        const cx = h.x + h.w * 0.5;
-        const cy = h.bl - h.h * 0.42;
-        /** Центр буквы с учётом разлёта — как в референсе сила и «чернила» идут от фактической позиции */
-        const acx = cx + h.ox + h.jx;
-        const acy = cy + h.oy + h.jy;
-        const mx = lastMouseX;
-        const my = lastMouseY;
-        const colPadX = 14;
-        const colPadY = 18;
-        const inHomeColumn =
-          painting &&
-          mx >= h.x - colPadX &&
-          mx <= h.x + h.w + colPadX &&
-          my >= h.bl - h.h - colPadY &&
-          my <= h.bl + colPadY * 0.48;
-        const followR = 52 + h.h * 0.38 + h.melt * 48;
-        const nearPaintedGlyph = painting && Math.hypot(mx - acx, my - acy) < followR;
-        const inBand = inHomeColumn || nearPaintedGlyph;
-
-        const penX = h.x + h.ox + h.jx;
-        const penY = h.bl + h.oy + h.jy;
-        const onGlyph = painting && glyphHitTight(mx, my, fontCss, h, penX, penY);
-
-        let inkPr = 0;
-        let gpx = 0;
-        let gpy = 0;
-        if (onGlyph) {
-          inkPr = Math.min(1.35, 0.38 + fieldPressure(mx, my, t) * 1.05);
-        } else if (inBand) {
-          const core = Math.max(
-            fieldPressure(acx, acy, t),
-            fieldPressure(acx - 8, acy, t),
-            fieldPressure(acx + 8, acy, t),
-            fieldPressure(acx, acy - 8, t),
-            fieldPressure(acx, acy + 8, t),
-          );
-          const atBrush = fieldPressure(mx, my, t);
-          inkPr = Math.min(1.12, Math.max(core * 0.92, atBrush * 0.72));
-        }
-
-        if (inkPr > 0.03) {
-          const sx = onGlyph ? mx : acx;
-          const sy = onGlyph ? my : acy;
-          gpx = (fieldPressure(sx + 10, sy, t) - fieldPressure(sx - 10, sy, t)) * 0.5;
-          gpy = (fieldPressure(sx, sy + 10, t) - fieldPressure(sx, sy - 10, t)) * 0.5;
-        }
-
-        const distLag = Math.hypot(acx - brushLagX, acy - brushLagY);
-        const brushPush = inkPr > 0.04 ? smoothstep(118, 0, distLag) * (onGlyph ? 1 : 0.62) : 0;
-
-        const tgtMelt = Math.min(
-          1,
-          inkPr * 0.48 + brushPush * 0.26 + smoothstep(0.26, 1.02, inkPr) * 0.2,
-        );
-        h.melt += (tgtMelt - h.melt) * meltFollow;
-
-        const alphaTarget = 1 - smoothstep(0, 0.24, inkPr);
-        const alphaBase = 18 + mot * 12;
-        const alphaK =
-          alphaTarget > h.visAlpha
-            ? 1 - Math.exp(-(alphaBase + ret * 32) * dt)
-            : 1 - Math.exp(-(alphaBase + ret * 6) * dt);
-        h.visAlpha += (alphaTarget - h.visAlpha) * alphaK;
-
-        const scatter = Math.max(0.15, b.letterScatter);
-        const flow = (0.55 + h.melt * 0.48 + inkPr * 0.38) * (0.16 + mot * 0.22) * scatter;
-        const push = (0.065 + h.melt * 0.11) * scatter;
-        const fx = gpx * flow * 34 + (acx - brushLagX) * brushPush * push * 0.85;
-        const fy = gpy * flow * 34 + (acy - brushLagY) * brushPush * push * 0.85;
-        h.vx += fx * dt * 16;
-        h.vy += fy * dt * 16;
-
-        /**
-         * «Пылинка»: слабое тяготение к дому + сильное вязкое трение воздуха (без пружинного дребезга).
-         * Нет отдельного k*x + (1-d)*v в стиле пружины — одна плавная релаксация скорости.
-         */
-        const inkEase = smoothstep(0.06, 0.5, inkPr);
-        const relax = (0.42 + ret * 0.95) * (1 - inkEase * 0.72) * (1 - h.melt * 0.22);
-        const drag = 1.85 + ret * 0.65 + inkPr * 0.45 + h.melt * 0.35;
-        h.vx += (-h.ox * relax * 5.2 - h.vx * drag) * dt;
-        h.vy += (-h.oy * relax * 5.2 - h.vy * drag) * dt;
-
-        h.ox += h.vx * dt;
-        h.oy += h.vy * dt;
-
-        const dust =
-          (1 - smoothstep(0, 0.24, inkPr)) * (1 - smoothstep(0.35, 0.95, h.melt)) * scatter;
-        h.vx += Math.sin(t * 0.00038 + h.x * 0.052 + h.bl * 0.01) * 4.8 * dust * dt;
-        h.vy += Math.cos(t * 0.00033 + h.bl * 0.041 + h.x * 0.013) * 4.0 * dust * dt;
-
-        const jNoise = Math.sin(t * 0.0009 + h.x * 0.02) * 1.1 * h.melt;
-        const jTx = gpx * 12 * h.melt + jNoise;
-        const jTy = gpy * 12 * h.melt + Math.cos(t * 0.00075 + h.bl * 0.01) * 1.0 * h.melt;
-        const jk = 0.032 + ret * 0.1;
-        h.jvx += (jTx - h.jx) * jk;
-        h.jvy += (jTy - h.jy) * jk;
-        h.jx += h.jvx;
-        h.jy += h.jvy;
-        h.jvx *= 0.965 - h.melt * 0.025;
-        h.jvy *= 0.965 - h.melt * 0.025;
-
-        const tumble = scatter * (0.75 + mot * 0.28);
-        h.vrot +=
-          ((gpx * 0.48 + gpy * -0.2) * h.melt * 1.65 + inkPr * Math.sin(t * 0.0015 + h.x * 0.08) * 0.09) *
-          tumble *
-          dt *
-          18;
-        h.vrot += (-h.rot * (0.48 + ret * 0.95) - h.vrot * (0.88 + ret * 0.55)) * dt;
-        h.rot += h.vrot * dt;
-      }
-
-      const speed = Math.hypot(lastMouseX - prevMouseX, lastMouseY - prevMouseY);
-      prevMouseX = lastMouseX;
-      prevMouseY = lastMouseY;
+    if (!frozen && painting) {
       const density = b.figureDensity;
-      const baseGap = Math.round(lerp(78, 8, density));
-      const speedBoost = Math.min(1, speed / 14);
-      const spawnGap = Math.max(4, Math.round(baseGap * (1 - speedBoost * 0.75)));
-
-      if (painting) {
-        const dtPaint = t - lastPaint;
-        if (dtPaint > spawnGap) {
-          lastPaint = t;
-          spawnShape(lastMouseX, lastMouseY);
-          if (density > 0.48 && Math.random() < 0.28 + density * 0.38) {
-            spawnShape(
-              lastMouseX + (Math.random() - 0.5) * 20,
-              lastMouseY + (Math.random() - 0.5) * 16,
-            );
-          }
-        }
+      const segDx = lastMouseX - prevMouseX;
+      const segDy = lastMouseY - prevMouseY;
+      const segLen = Math.hypot(segDx, segDy);
+      if (segLen > 1.5 || t - lastEmit > 28) {
+        emitStream(prevMouseX, prevMouseY, lastMouseX, lastMouseY, density);
+        lastEmit = t;
       }
     }
+
+    prevMouseX = lastMouseX;
+    prevMouseY = lastMouseY;
+
+    ctx.save();
+    if (b.blur) {
+      const sb = b.shapeBlur ?? 0.78;
+      ctx.filter = `blur(${4 + sb * 14}px)`;
+    } else ctx.filter = 'none';
+
+    const sorted = [...particles].sort((a, b) => a.depth - b.depth);
+    for (const sh of sorted) drawParticle(sh, t);
+    ctx.restore();
+
+    updateLetters(t, dt, frozen);
 
     ctx.save();
     ctx.font = s.fontCss;
@@ -445,10 +498,10 @@ export function createBloomPaintMode(
         index: i,
         total: homes.length,
       });
-      ctx.globalAlpha = Math.max(0, Math.min(1, h.visAlpha));
+      ctx.globalAlpha = Math.max(0.08, Math.min(1, h.visAlpha));
       ctx.fillStyle = fill;
-      const px = h.x + h.ox + h.jx;
-      const py = h.bl + h.oy + h.jy;
+      const px = h.x + h.ox;
+      const py = h.bl + h.oy;
       ctx.save();
       ctx.translate(px, py);
       ctx.rotate(h.rot);
@@ -472,7 +525,8 @@ export function createBloomPaintMode(
     prevMouseY = lastMouseY;
     brushLagX = lastMouseX;
     brushLagY = lastMouseY;
-    lastPaint = performance.now();
+    lastEmit = performance.now();
+    emitStream(lastMouseX, lastMouseY, lastMouseX, lastMouseY, getSnap().visual.bloom.figureDensity);
     canvas.setPointerCapture(e.pointerId);
     capturePointerId = e.pointerId;
   }
