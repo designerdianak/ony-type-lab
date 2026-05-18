@@ -37,26 +37,20 @@ export interface ExpansionSettings {
 }
 
 export interface BloomSettings {
-  shapeSize: number;
-  growSpeed: number;
-  dissolveSpeed: number;
-  /** сила размытия пятен (при включённом Blur), 0 = почти без, 1 = сильное «bloom» как в референсе */
-  shapeBlur: number;
-  blur: boolean;
-  multiply: boolean;
-  motionIntensity: number;
-  /** 0 = реже фигуры, 1 = плотнее */
-  figureDensity: number;
-  /** амплитуда «растительного» покачивания */
-  plantOrganic: number;
-  /** как быстро буквы возвращаются на место и проявляются после «чернил» (пружина + микродрейф) */
-  letterReturn: number;
-  /** баланс: меньше = дольше живёт графика, больше = быстрее исчезает */
-  graphicFade: number;
-  /** Насколько далеко буквы «улетают» под давлением графики (множитель силы) */
-  letterScatter: number;
-  /** >1 — овалы качаются медленнее дольше; <1 — быстрее */
-  ovalSwayDuration: number;
+  /** радиус зоны влияния курсора */
+  interactionRadius: number;
+  /** сила смещения букв от курсора */
+  displacementStrength: number;
+  /** плотность типографического следа */
+  trailAmount: number;
+  /** длительность затухания следа */
+  trailLifetime: number;
+  /** скорость пружинного возврата букв */
+  returnSpeed: number;
+  /** вытягивание фрагментов следа по скорости */
+  trailStretch: number;
+  /** разброс размера фрагментов следа */
+  trailSizeVariance: number;
 }
 
 export interface AssemblySettings {
@@ -145,19 +139,13 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
     collisionImpulse: 0.72,
   },
   bloom: {
-    shapeSize: 1.08,
-    growSpeed: 1.02,
-    dissolveSpeed: 0.92,
-    shapeBlur: 0.82,
-    blur: true,
-    multiply: false,
-    motionIntensity: 0.56,
-    figureDensity: 0.66,
-    plantOrganic: 0.58,
-    letterReturn: 0.44,
-    graphicFade: 0.44,
-    letterScatter: 1.18,
-    ovalSwayDuration: 1.05,
+    interactionRadius: 1.05,
+    displacementStrength: 0.52,
+    trailAmount: 0.62,
+    trailLifetime: 0.72,
+    returnSpeed: 0.58,
+    trailStretch: 0.48,
+    trailSizeVariance: 0.38,
   },
   assembly: {
     overlap: true,

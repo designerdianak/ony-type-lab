@@ -27,7 +27,7 @@ function modeHint(mode: LabModeId): string {
     case 'expansion':
       return 'Клик или зажми и веди по буквам — клоны; ползунок — дистанция. Стоп — PNG';
     case 'bloom':
-      return 'Зажми и веди — живые формы; над буквой — мягкое растворение. Очистить экран — только рисунок';
+      return 'Веди курсором — буквы слегка отступают; след — отпечаток движения, не кисть';
     case 'assembly':
       return 'Буквы слетают в слово и остаются слегка нестабильными';
     case 'symbol':
@@ -339,116 +339,68 @@ export default function App() {
         {mode === 'bloom' && (
           <>
             <LabeledSlider
-              label="Shape size"
-              min={0.4}
+              label="Радиус влияния"
+              min={0.35}
               max={2.2}
               step={0.02}
-              value={visual.bloom.shapeSize}
+              value={visual.bloom.interactionRadius}
               format={(n) => n.toFixed(2)}
-              onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, shapeSize: v } }))}
+              onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, interactionRadius: v } }))}
             />
             <LabeledSlider
-              label="Grow"
-              min={0.2}
-              max={2.4}
-              step={0.02}
-              value={visual.bloom.growSpeed}
-              format={(n) => n.toFixed(2)}
-              onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, growSpeed: v } }))}
-            />
-            <LabeledSlider
-              label="Dissolve"
-              min={0.2}
-              max={2.6}
-              step={0.02}
-              value={visual.bloom.dissolveSpeed}
-              format={(n) => n.toFixed(2)}
-              onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, dissolveSpeed: v } }))}
-            />
-            <LabeledSlider
-              label="Размытие пятна"
-              min={0}
-              max={1}
-              step={0.02}
-              value={visual.bloom.shapeBlur}
-              format={(n) => n.toFixed(2)}
-              onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, shapeBlur: v } }))}
-            />
-            <LabeledSlider
-              label="Motion"
-              min={0.05}
+              label="Смещение букв"
+              min={0.08}
               max={1.2}
-              step={0.01}
-              value={visual.bloom.motionIntensity}
+              step={0.02}
+              value={visual.bloom.displacementStrength}
               format={(n) => n.toFixed(2)}
-              onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, motionIntensity: v } }))}
+              onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, displacementStrength: v } }))}
             />
             <LabeledSlider
-              label="Плотность фигур"
+              label="След"
               min={0}
               max={1}
               step={0.02}
-              value={visual.bloom.figureDensity}
+              value={visual.bloom.trailAmount}
               format={(n) => n.toFixed(2)}
-              onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, figureDensity: v } }))}
+              onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, trailAmount: v } }))}
             />
             <LabeledSlider
-              label="Растительное качание"
+              label="Жизнь следа"
+              min={0.15}
+              max={1}
+              step={0.02}
+              value={visual.bloom.trailLifetime}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, trailLifetime: v } }))}
+            />
+            <LabeledSlider
+              label="Возврат"
+              min={0.12}
+              max={1.4}
+              step={0.02}
+              value={visual.bloom.returnSpeed}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, returnSpeed: v } }))}
+            />
+            <LabeledSlider
+              label="Вытягивание следа"
               min={0}
               max={1}
               step={0.02}
-              value={visual.bloom.plantOrganic}
+              value={visual.bloom.trailStretch}
               format={(n) => n.toFixed(2)}
-              onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, plantOrganic: v } }))}
+              onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, trailStretch: v } }))}
             />
             <LabeledSlider
-              label="Возврат букв"
-              min={0.02}
-              max={1.6}
-              step={0.02}
-              value={visual.bloom.letterReturn}
-              format={(n) => n.toFixed(2)}
-              onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, letterReturn: v } }))}
-            />
-            <LabeledSlider
-              label="Скорость угасания графики"
+              label="Разброс размера"
               min={0}
               max={1}
               step={0.02}
-              value={visual.bloom.graphicFade}
+              value={visual.bloom.trailSizeVariance}
               format={(n) => n.toFixed(2)}
-              onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, graphicFade: v } }))}
+              onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, trailSizeVariance: v } }))}
             />
-            <LabeledSlider
-              label="Радиус полёта букв"
-              min={0.25}
-              max={2.4}
-              step={0.02}
-              value={visual.bloom.letterScatter}
-              format={(n) => n.toFixed(2)}
-              onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, letterScatter: v } }))}
-            />
-            <LabeledSlider
-              label="Длительность качания овалов"
-              min={0.35}
-              max={2.8}
-              step={0.02}
-              value={visual.bloom.ovalSwayDuration}
-              format={(n) => n.toFixed(2)}
-              onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, ovalSwayDuration: v } }))}
-            />
-            <div className="lab__row">
-              <RoundToggle
-                label="Blur"
-                pressed={visual.bloom.blur}
-                onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, blur: v } }))}
-              />
-              <RoundToggle
-                label="Bloom multiply"
-                pressed={visual.bloom.multiply}
-                onChange={(v) => setVisual((s) => ({ ...s, bloom: { ...s.bloom, multiply: v } }))}
-              />
-            </div>
           </>
         )}
 
