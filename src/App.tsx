@@ -25,13 +25,13 @@ const DEFAULT_WEIGHT =
 function modeHint(mode: LabModeId): string {
   switch (mode) {
     case 'expansion':
-      return 'Клик или зажми и веди по буквам — клоны; ползунок — дистанция. Стоп — PNG';
+      return 'Клик по букве — водопад; повторный клик — выкл. Статичные буквы не разъезжаются';
     case 'bloom':
       return 'Веди курсором — буквы слегка отступают; след — отпечаток движения, не кисть';
     case 'assembly':
-      return 'Буквы слетают в слово и остаются слегка нестабильными';
+      return 'Бесконечный поток букв собирается в слово; в покое — пиксельный глитч-шаг';
     case 'symbol':
-      return 'Оверлей цифр/знаков; «Всегда» или клик/наведение. Стоп — заморозить';
+      return 'Слово внизу; поверх — те же шрифт и кегль, multiply. Клик — вкл/выкл символ';
     case 'elastic':
       return 'Тяни букву — копии в зазорах; после отпускания излом сохраняется';
     case 'softBody':
@@ -282,57 +282,41 @@ export default function App() {
         {mode === 'expansion' && (
           <>
             <LabeledSlider
-              label="Клоны за клик"
-              min={1}
-              max={10}
-              value={visual.expansion.cloneAmount}
-              onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, cloneAmount: v } }))}
-            />
-            <LabeledSlider
-              label="Дистанция клонов (px)"
-              min={2}
-              max={56}
-              value={visual.expansion.cloneSpawnDistance}
-              onChange={(v) =>
-                setVisual((s) => ({ ...s, expansion: { ...s.expansion, cloneSpawnDistance: v } }))
-              }
-            />
-            <LabeledSlider
-              label="Spread"
-              min={0.05}
-              max={1.2}
-              step={0.01}
-              value={visual.expansion.spreadForce}
+              label="Плотность водопада"
+              min={0.1}
+              max={1}
+              step={0.02}
+              value={visual.expansion.waterfallDensity}
               format={(n) => n.toFixed(2)}
-              onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, spreadForce: v } }))}
+              onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, waterfallDensity: v } }))}
             />
             <LabeledSlider
-              label="Collision spacing"
+              label="Разброс"
               min={0}
-              max={32}
-              value={visual.expansion.collisionSpacing}
-              onChange={(v) =>
-                setVisual((s) => ({ ...s, expansion: { ...s.expansion, collisionSpacing: v } }))
-              }
+              max={1}
+              step={0.02}
+              value={visual.expansion.spread}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, spread: v } }))}
             />
             <LabeledSlider
-              label="Толчок при столкновении"
+              label="Скорость падения"
               min={0.1}
               max={1.2}
               step={0.02}
-              value={visual.expansion.collisionImpulse}
+              value={visual.expansion.fallSpeed}
               format={(n) => n.toFixed(2)}
-              onChange={(v) =>
-                setVisual((s) => ({ ...s, expansion: { ...s.expansion, collisionImpulse: v } }))
-              }
+              onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, fallSpeed: v } }))}
             />
-            <div className="lab__row">
-              <RoundToggle
-                label="Auto grow"
-                pressed={visual.expansion.autoGrow}
-                onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, autoGrow: v } }))}
-              />
-            </div>
+            <LabeledSlider
+              label="Покачивание"
+              min={0}
+              max={1}
+              step={0.02}
+              value={visual.expansion.sway}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, sway: v } }))}
+            />
           </>
         )}
 
@@ -407,7 +391,7 @@ export default function App() {
         {mode === 'assembly' && (
           <>
             <LabeledSlider
-              label="Копий к букве"
+              label="Глубина следа"
               min={4}
               max={24}
               step={1}
@@ -415,7 +399,7 @@ export default function App() {
               onChange={(v) => setVisual((s) => ({ ...s, assembly: { ...s.assembly, inwardCopies: v } }))}
             />
             <LabeledSlider
-              label="Радиус прилёта"
+              label="Завихрение потока"
               min={0.4}
               max={2.2}
               step={0.02}
@@ -424,24 +408,24 @@ export default function App() {
               onChange={(v) => setVisual((s) => ({ ...s, assembly: { ...s.assembly, orbitRadius: v } }))}
             />
             <LabeledSlider
-              label="Скорость сборки"
-              min={0.08}
-              max={0.65}
+              label="Сила сборки"
+              min={0.12}
+              max={0.85}
               step={0.01}
               value={visual.assembly.mergeSpeed}
               format={(n) => n.toFixed(2)}
               onChange={(v) => setVisual((s) => ({ ...s, assembly: { ...s.assembly, mergeSpeed: v } }))}
             />
             <LabeledSlider
-              label="Pixel jump"
+              label="Глитч-шаг"
               min={1}
               max={12}
               value={visual.assembly.pixelJump}
               onChange={(v) => setVisual((s) => ({ ...s, assembly: { ...s.assembly, pixelJump: v } }))}
             />
             <LabeledSlider
-              label="Drift"
-              min={0.05}
+              label="Скорость потока"
+              min={0.15}
               max={1}
               step={0.01}
               value={visual.assembly.drift}
@@ -462,9 +446,9 @@ export default function App() {
           <>
             <div className="lab__row">
               <RoundButton
-                active={visual.symbol.interaction === 'clickToPaint'}
+                active={visual.symbol.interaction === 'clickToggle'}
                 onClick={() =>
-                  setVisual((s) => ({ ...s, symbol: { ...s.symbol, interaction: 'clickToPaint' } }))
+                  setVisual((s) => ({ ...s, symbol: { ...s.symbol, interaction: 'clickToggle' } }))
                 }
               >
                 Клик
@@ -477,7 +461,7 @@ export default function App() {
               </RoundButton>
             </div>
             <LabeledSlider
-              label="Плотность символов"
+              label="Сила оверлея"
               min={0.2}
               max={1.2}
               step={0.02}

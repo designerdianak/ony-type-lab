@@ -3,127 +3,183 @@ import { colorForGlyph, lerp, smoothstep } from '../utils/colors';
 import { applyMultiplyBlend, clearNeutral } from '../utils/canvas';
 import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
 import type { ModeController, ModeSnapshot } from './types';
+import type { AssemblySettings } from '../types/playground';
 
-type Slot = {
+type AsmGlyph = {
   char: string;
+  slot: number;
   tx: number;
   ty: number;
   w: number;
   h: number;
-  /** текущая позиция (пружина к tx,ty) */
   x: number;
   y: number;
   vx: number;
   vy: number;
   merge: number;
-  /** сглаженный микродрейф вокруг якоря */
+  lockTime: number;
   jx: number;
   jy: number;
   jxTgt: number;
   jyTgt: number;
   rot: number;
   vrot: number;
-  orbitSeed: number;
   phaseA: number;
   phaseB: number;
-  phaseC: number;
-  driftAmp: number;
-  driftFreq: number;
-  ghostAngles: number[];
-  ghostRadius: number[];
-  gjx: number[];
-  gjy: number[];
+  glitchStep: number;
+  speedMul: number;
+  streamId: number;
 };
-
-/** плавный шум из синусов — без резкого jitter */
-function smoothDrift(t: number, phaseA: number, phaseB: number, phaseC: number, freq: number): { x: number; y: number } {
-  const tt = t * 0.001 * freq;
-  return {
-    x:
-      Math.sin(tt * 1.0 + phaseA) * 0.55 +
-      Math.sin(tt * 0.37 + phaseB * 1.3) * 0.28 +
-      Math.cos(tt * 0.21 + phaseC) * 0.17,
-    y:
-      Math.cos(tt * 0.92 + phaseB) * 0.52 +
-      Math.sin(tt * 0.41 + phaseA * 0.8) * 0.3 +
-      Math.cos(tt * 0.19 + phaseC * 1.1) * 0.18,
-  };
-}
 
 export function createAssemblyMode(
   _canvas: HTMLCanvasElement,
   ctx: CanvasRenderingContext2D,
   getSnap: () => ModeSnapshot,
 ): ModeController {
-  let slots: Slot[] = [];
+  let glyphs: AsmGlyph[] = [];
   let layoutSig = '';
   let tickerFn: (() => void) | null = null;
   let lastCanvasClearNonce = 0;
   let lastTickTime = performance.now();
+  let fieldAngle = 0;
+  let fieldAngleVel = 0;
+
+  function flowVelocityAt(
+    x: number,
+    y: number,
+    t: number,
+    asm: AssemblySettings,
+    w: number,
+    h: number,
+  ): { vx: number; vy: number } {
+    const tt = t * 0.001 * (0.3 + asm.drift * 1.6);
+    const curl = asm.orbitRadius * 1.1;
+    const nx = (x / Math.max(1, w)) * Math.PI * 2;
+    const ny = (y / Math.max(1, h)) * Math.PI * 2;
+    const ang =
+      fieldAngle +
+      Math.sin(nx * 1.05 + ny * 0.62 + tt) * curl * 0.5 +
+      Math.cos(nx * 0.72 - ny * 1.15 + tt * 0.7) * curl * 0.38;
+    const base = 14 + asm.drift * 38 + asm.mergeSpeed * 18;
+    const turb = 1 + Math.sin(t * 0.0005 + x * 0.007) * 0.1 * asm.orbitRadius;
+    return { vx: Math.cos(ang) * base * turb, vy: Math.sin(ang) * base * turb * 0.58 };
+  }
+
+  function spawnGlyph(
+    g: AsmGlyph,
+    slot: number,
+    lay: { char: string; x: number; baseline: number; w: number; h: number },
+    margin: number,
+    oy: number,
+    rowH: number,
+    fromLeft: boolean,
+  ) {
+    g.char = lay.char;
+    g.slot = slot;
+    g.tx = lay.x;
+    g.ty = lay.baseline;
+    g.w = lay.w;
+    g.h = lay.h;
+    g.merge = 0;
+    g.lockTime = 0;
+    g.jx = g.jy = g.jxTgt = g.jyTgt = 0;
+    g.rot = (Math.random() - 0.5) * 0.1;
+    g.vrot = 0;
+    if (fromLeft) {
+      g.x = -margin - Math.random() * 80;
+      g.y = oy + (Math.random() - 0.5) * rowH * 0.9;
+      g.vx = 20 + Math.random() * 30;
+      g.vy = (Math.random() - 0.5) * 12;
+    } else {
+      g.x = lay.x + (Math.random() - 0.5) * 12;
+      g.y = lay.baseline + (Math.random() - 0.5) * 8;
+      g.vx = (Math.random() - 0.5) * 6;
+      g.vy = (Math.random() - 0.5) * 6;
+    }
+  }
 
   function rebuild() {
     const s = getSnap();
     const asm = s.visual.assembly;
-    const spacingBoost = asm.overlap ? 0 : s.fontSize * 0.08;
+    const spacingBoost = asm.overlap ? 0 : s.fontSize * 0.06;
     const letter = s.letterSpacing + spacingBoost;
     const tw = measureLineWidth(ctx, s.text, s.fontCss, letter);
     const baseOx = (s.w - tw) * 0.5;
     const oy = s.h * 0.55;
     const lays = layoutGlyphs(ctx, s.text, s.fontCss, s.fontSize, letter, baseOx, oy);
-    const copies = Math.max(4, Math.min(28, Math.round(asm.inwardCopies)));
-    const R0 = s.fontSize * asm.orbitRadius * 2.4;
+    if (lays.length === 0) {
+      glyphs = [];
+      return;
+    }
 
-    slots = lays.map((g) => {
-      const angles: number[] = [];
-      const radii: number[] = [];
-      const gjx: number[] = [];
-      const gjy: number[] = [];
-      for (let k = 0; k < copies; k++) {
-        angles.push((k / copies) * Math.PI * 2 + Math.random() * 0.5);
-        radii.push((0.4 + Math.random() * 0.6) * R0);
-        gjx.push((Math.random() - 0.5) * 4);
-        gjy.push((Math.random() - 0.5) * 3);
-      }
-      const ang0 = Math.random() * Math.PI * 2;
-      const r0 = R0 * (0.65 + Math.random() * 0.45);
-      return {
-        char: g.char,
-        tx: g.x,
-        ty: g.baseline,
-        w: g.w,
-        h: g.h,
-        x: g.x + Math.cos(ang0) * r0,
-        y: g.baseline + Math.sin(ang0) * r0 * 0.42,
-        vx: (Math.random() - 0.5) * 8,
-        vy: (Math.random() - 0.5) * 6,
+    const margin = 100;
+    const avgW = Math.max(6, tw / lays.length);
+    const span = s.w + margin * 2;
+    const count = Math.ceil(span / (avgW * 0.68)) + lays.length * 3;
+    const rowH = s.fontSize * 1.12;
+
+    glyphs = [];
+    for (let i = 0; i < count; i++) {
+      const slot = i % lays.length;
+      const lay = lays[slot]!;
+      const g: AsmGlyph = {
+        char: lay.char,
+        slot,
+        tx: lay.x,
+        ty: lay.baseline,
+        w: lay.w,
+        h: lay.h,
+        x: 0,
+        y: 0,
+        vx: 0,
+        vy: 0,
         merge: 0,
+        lockTime: 0,
         jx: 0,
         jy: 0,
         jxTgt: 0,
         jyTgt: 0,
-        rot: (Math.random() - 0.5) * 0.08,
+        rot: 0,
         vrot: 0,
-        orbitSeed: Math.random() * Math.PI * 2,
         phaseA: Math.random() * Math.PI * 2,
-        phaseB: Math.random() * Math.PI * 2,
-        phaseC: Math.random() * 2000,
-        driftAmp: 0.35 + Math.random() * 0.65,
-        driftFreq: 0.55 + Math.random() * 0.85,
-        ghostAngles: angles,
-        ghostRadius: radii,
-        gjx,
-        gjy,
+        phaseB: Math.random() * 2000,
+        glitchStep: -1,
+        speedMul: 0.76 + Math.random() * 0.48,
+        streamId: i,
       };
-    });
+      spawnGlyph(g, slot, lay, margin, oy, rowH, true);
+      glyphs.push(g);
+    }
   }
 
   function ensure() {
     const s = getSnap();
     const asm = s.visual.assembly;
-    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${s.w}|${s.h}|${asm.overlap}|${asm.inwardCopies}|${asm.orbitRadius}`;
+    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${s.w}|${s.h}|${asm.overlap}|${asm.drift}|${asm.orbitRadius}`;
     if (sig !== layoutSig) {
       layoutSig = sig;
       rebuild();
+    }
+  }
+
+  function updateGlitch(g: AsmGlyph, t: number, asm: AssemblySettings, rest: number) {
+    const grid = Math.max(1, asm.pixelJump);
+    const stepMs = 95 + (1 - asm.mergeSpeed) * 85;
+    const stepId = Math.floor(t / stepMs);
+    if (stepId !== g.glitchStep && rest > 0.55) {
+      g.glitchStep = stepId;
+      const steps = [-1, 0, 1];
+      g.jxTgt = steps[Math.floor(Math.random() * 3)]! * grid * (0.6 + Math.random() * 0.5);
+      g.jyTgt = steps[Math.floor(Math.random() * 3)]! * grid * (0.6 + Math.random() * 0.45);
+    }
+    const snapK = rest > 0.7 ? 0.42 : 0.18;
+    g.jx += (g.jxTgt - g.jx) * snapK;
+    g.jy += (g.jyTgt - g.jy) * snapK;
+    g.jx = lerp(g.jx, Math.round(g.jx / grid) * grid, rest * 0.55);
+    g.jy = lerp(g.jy, Math.round(g.jy / grid) * grid, rest * 0.55);
+    if (rest < 0.4) {
+      g.jx *= 0.9;
+      g.jy *= 0.9;
     }
   }
 
@@ -141,114 +197,137 @@ export function createAssemblyMode(
 
     const frozen = s.visual.sceneFrozen;
     const asm = s.visual.assembly;
-    const anim = s.animationEnabled ? 1 : 0.5;
+    const anim = s.animationEnabled ? 1 : 0.45;
     const t = performance.now();
     const dt = Math.min(0.034, Math.max(0.008, (t - lastTickTime) / 1000));
     lastTickTime = t;
+    const margin = 100;
+    const fs = s.fontSize;
 
-    const grid = Math.max(1, asm.pixelJump);
-    const mergeSpd = asm.mergeSpeed * (anim ? 1.05 : 0.5);
-    const driftPx = asm.drift * s.fontSize * 0.055 * anim;
+    if (!frozen && glyphs.length > 0) {
+      fieldAngleVel +=
+        (Math.sin(t * 0.00026 + asm.drift) * 0.00032 * asm.orbitRadius - fieldAngleVel * 0.38) * dt;
+      fieldAngle += fieldAngleVel * dt * 50 * (0.2 + asm.drift * 0.5) * anim;
 
-    if (!frozen) {
-      for (const sl of slots) {
-        const dx = sl.tx - sl.x;
-        const dy = sl.ty - sl.y;
+      const followK = 1 - Math.exp(-(2 + asm.drift * 2.2) * dt);
+      const pullK = 6 + asm.mergeSpeed * 48;
+
+      for (const g of glyphs) {
+        const dx = g.tx - g.x;
+        const dy = g.ty - g.y;
         const dist = Math.hypot(dx, dy);
+        const near = smoothstep(fs * 1.8, fs * 0.12, dist);
 
-        const springK = (8 + mergeSpd * 42) * (1 + sl.merge * 0.15);
-        const damp = 3.2 + mergeSpd * 8 + sl.merge * 2.5;
-        sl.vx += (dx * springK - sl.vx * damp) * dt;
-        sl.vy += (dy * springK - sl.vy * damp) * dt;
-        sl.x += sl.vx * dt;
-        sl.y += sl.vy * dt;
+        const flow = flowVelocityAt(g.x, g.y, t, asm, s.w, s.h);
+        const flowMix = (1 - g.merge) * (0.55 + asm.drift * 0.45);
+        const tvx = flow.vx * g.speedMul * anim * flowMix;
+        const tvy = flow.vy * g.speedMul * anim * flowMix;
+        g.vx += (tvx - g.vx) * followK;
+        g.vy += (tvy - g.vy) * followK;
 
-        const settle = 1 - smoothstep(s.fontSize * 0.35, s.fontSize * 0.08, dist);
-        sl.merge += (settle - sl.merge) * (1 - Math.exp(-(2.5 + mergeSpd * 6) * dt));
-        sl.merge = Math.max(0, Math.min(1, sl.merge));
-
-        const rest = smoothstep(0.82, 1, sl.merge);
-        const micro = driftPx * sl.driftAmp * (0.25 + rest * 0.75);
-        const { x: nx, y: ny } = smoothDrift(t, sl.phaseA, sl.phaseB, sl.phaseC, sl.driftFreq);
-        sl.jxTgt = nx * micro;
-        sl.jyTgt = ny * micro;
-
-        const glideK = 1 - Math.exp(-(3.5 + asm.drift * 4) * dt);
-        sl.jx += (sl.jxTgt - sl.jx) * glideK;
-        sl.jy += (sl.jyTgt - sl.jy) * glideK;
-
-        if (grid > 1 && rest > 0.5) {
-          sl.jx = lerp(sl.jx, Math.round(sl.jx / grid) * grid, 0.35);
-          sl.jy = lerp(sl.jy, Math.round(sl.jy / grid) * grid, 0.35);
+        const pull = near * pullK * (0.35 + g.merge * 0.65);
+        if (dist > 0.5) {
+          g.vx += (dx / dist) * pull * dt;
+          g.vy += (dy / dist) * pull * dt;
         }
 
-        const rotMicro = (0.35 + rest * 0.65) * anim * 0.0012 * sl.driftAmp;
-        sl.vrot += Math.sin(t * 0.001 + sl.phaseA) * rotMicro * dt;
-        sl.vrot += (-sl.rot * (1.4 + asm.drift * 2) - sl.vrot * (2.2 + asm.drift)) * dt;
-        sl.rot += sl.vrot * dt;
+        const damp = 2.4 + asm.mergeSpeed * 5 + g.merge * 2;
+        g.vx *= 1 - damp * dt * 0.35;
+        g.vy *= 1 - damp * dt * 0.35;
+        g.x += g.vx * dt;
+        g.y += g.vy * dt;
+
+        if (g.x > s.w + margin) {
+          g.x -= s.w + margin * 2;
+        } else if (g.x < -margin) {
+          g.x += s.w + margin * 2;
+        }
+
+        const tgtMerge = near * (0.4 + smoothstep(fs * 0.5, fs * 0.08, dist) * 0.6);
+        g.merge += (tgtMerge - g.merge) * (1 - Math.exp(-(3 + asm.mergeSpeed * 8) * dt));
+        g.merge = Math.max(0, Math.min(1, g.merge));
+
+        const rest = smoothstep(0.72, 0.98, g.merge);
+        updateGlitch(g, t, asm, rest);
+
+        g.vrot += Math.sin(t * 0.001 + g.phaseA) * rest * 0.001 * dt;
+        g.vrot += (-g.rot * 2 - g.vrot * 3) * dt;
+        g.rot += g.vrot * dt;
+
+        if (g.merge > 0.9 && dist < fs * 0.14) {
+          g.lockTime += dt;
+          const hold = 0.35 + (g.streamId % 7) * 0.04;
+          if (g.lockTime > hold) {
+            spawnGlyph(
+              g,
+              g.slot,
+              { char: g.char, x: g.tx, baseline: g.ty, w: g.w, h: g.h },
+              margin,
+              s.h * 0.55,
+              fs * 1.12,
+              true,
+            );
+            g.glitchStep = -1;
+          }
+        } else {
+          g.lockTime = 0;
+        }
       }
     }
+
+    const echoes = Math.max(2, Math.min(14, Math.round(asm.inwardCopies * 0.5)));
 
     ctx.save();
     ctx.font = s.fontCss;
     ctx.textBaseline = 'alphabetic';
-    const copies = slots[0]?.ghostAngles.length ?? 0;
 
-    for (let i = 0; i < slots.length; i++) {
-      const sl = slots[i]!;
-      const me = sl.merge;
-      const ease = 1 - Math.pow(1 - me, 2.2);
-      const stagger = i * 0.018;
-      const slotEase = Math.max(0, Math.min(1, (ease - stagger) / Math.max(0.1, 1 - stagger)));
-      const ghostFade = 1 - smoothstep(0.55, 0.92, me);
+    for (const g of glyphs) {
+      const me = g.merge;
+      const fly = 1 - smoothstep(0.45, 0.88, me);
+      if (fly < 0.04) continue;
 
-      for (let k = 0; k < copies; k++) {
-        if (ghostFade < 0.03) break;
-        const ang = sl.ghostAngles[k]!;
-        const R = sl.ghostRadius[k]! * ghostFade;
-        const wob =
-          s.fontSize *
-          0.04 *
-          ghostFade *
-          Math.sin(t * 0.00105 + sl.orbitSeed + k * 1.6);
-        const gx =
-          sl.tx +
-          Math.cos(ang + me * 1.05) * R +
-          sl.gjx[k]! * ghostFade +
-          wob;
-        const gy =
-          sl.ty +
-          Math.sin(ang + me * 0.85) * R * 0.38 -
-          R * 0.12 * ghostFade +
-          sl.gjy[k]! * ghostFade +
-          wob * 0.55;
-        ctx.globalAlpha = (0.1 + 0.28 * ghostFade) * anim;
+      const spd = Math.hypot(g.vx, g.vy);
+      const ex = spd > 0.5 ? -g.vx / spd : -1;
+      const ey = spd > 0.5 ? -g.vy / spd : 0;
+      const drawX = lerp(g.x, g.tx, smoothstep(0, 0.85, me));
+      const drawY = lerp(g.y, g.ty, smoothstep(0, 0.85, me));
+
+      for (let k = echoes; k >= 1; k--) {
+        const trail = k / echoes;
+        const lag = (5 + asm.orbitRadius * 8) * trail * fly;
+        const tx = drawX + g.jx - ex * lag;
+        const ty = drawY + g.jy - ey * lag;
+        ctx.globalAlpha = fly * (0.05 + 0.16 * (1 - trail)) * anim;
         ctx.fillStyle = colorForGlyph({
           mode: s.visual.colorMode,
           monochrome: s.visual.monochromeColor,
           seed: s.visual.rainbowSeed,
-          index: i + k,
-          total: slots.length + copies,
+          index: g.streamId + k,
+          total: glyphs.length + echoes,
         });
-        ctx.fillText(sl.char, gx, gy);
+        ctx.fillText(g.char, tx, ty);
       }
+    }
 
-      const drawX = sl.tx + sl.jx + (sl.x - sl.tx) * (1 - slotEase);
-      const drawY = sl.ty + sl.jy + (sl.y - sl.ty) * (1 - slotEase);
-      const qAlpha = 0.35 + 0.65 * slotEase;
+    for (const g of glyphs) {
+      const me = g.merge;
+      const slotEase = smoothstep(0, 0.92, me);
+      const drawX = g.tx + g.jx + (g.x - g.tx) * (1 - slotEase);
+      const drawY = g.ty + g.jy + (g.y - g.ty) * (1 - slotEase);
+      const alpha = (0.28 + 0.72 * slotEase) * anim;
 
-      ctx.globalAlpha = qAlpha * anim;
+      ctx.globalAlpha = alpha;
       ctx.fillStyle = colorForGlyph({
         mode: s.visual.colorMode,
         monochrome: s.visual.monochromeColor,
         seed: s.visual.rainbowSeed,
-        index: i,
-        total: slots.length,
+        index: g.slot,
+        total: glyphs.length,
       });
       ctx.save();
       ctx.translate(drawX, drawY);
-      ctx.rotate(sl.rot * slotEase);
-      ctx.fillText(sl.char, 0, 0);
+      ctx.rotate(g.rot * slotEase);
+      ctx.fillText(g.char, 0, 0);
       ctx.restore();
     }
     ctx.restore();
@@ -259,6 +338,8 @@ export function createAssemblyMode(
       layoutSig = '';
       lastCanvasClearNonce = getSnap().visual.canvasClearNonce ?? 0;
       lastTickTime = performance.now();
+      fieldAngle = Math.random() * Math.PI * 2;
+      fieldAngleVel = 0;
       tickerFn = () => tick();
       gsap.ticker.add(tickerFn);
     },
