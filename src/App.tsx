@@ -317,6 +317,15 @@ export default function App() {
               format={(n) => n.toFixed(2)}
               onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, sway: v } }))}
             />
+            <LabeledSlider
+              label="Ветер"
+              min={-1}
+              max={1}
+              step={0.02}
+              value={visual.expansion.wind}
+              format={(n) => (n < 0 ? '← ' : n > 0 ? '→ ' : '') + Math.abs(n).toFixed(2)}
+              onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, wind: v } }))}
+            />
           </>
         )}
 

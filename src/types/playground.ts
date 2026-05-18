@@ -22,7 +22,7 @@ export const LAB_MODES: LabModeDefinition[] = [
   { id: 'assembly', label: 'Assembly', shortLabel: 'Asm' },
   { id: 'symbol', label: 'Symbol Overlay', shortLabel: 'Sym' },
   { id: 'elastic', label: 'Elastic Line', shortLabel: 'Elastic' },
-  { id: 'softBody', label: 'Soft Flow', shortLabel: 'Soft' },
+  { id: 'softBody', label: 'Вихрь', shortLabel: 'Вихрь' },
 ];
 
 export interface ExpansionSettings {
@@ -34,6 +34,8 @@ export interface ExpansionSettings {
   fallSpeed: number;
   /** лёгкое покачивание при падении */
   sway: number;
+  /** ветер: −1 влево, +1 вправо */
+  wind: number;
 }
 
 export interface BloomSettings {
@@ -137,6 +139,7 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
     spread: 0.45,
     fallSpeed: 0.48,
     sway: 0.35,
+    wind: 0,
   },
   bloom: {
     interactionRadius: 1.05,

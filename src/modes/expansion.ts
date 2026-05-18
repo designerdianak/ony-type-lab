@@ -117,7 +117,7 @@ export function createExpansionMode(
       slot,
       x: root.x + (Math.random() - 0.5) * spread,
       y: root.y - s.fontSize * (0.05 + Math.random() * 0.08),
-      vx: (Math.random() - 0.5) * exp.sway * 12,
+      vx: (Math.random() - 0.5) * exp.sway * 12 + exp.wind * s.fontSize * 0.35,
       vy: exp.fallSpeed * (0.35 + Math.random() * 0.25),
       alpha: 0.35 + Math.random() * 0.45,
       ...ink,
@@ -156,10 +156,11 @@ export function createExpansionMode(
 
       const grav = s.fontSize * (1.8 + exp.fallSpeed * 4.5);
       const sway = exp.sway * s.fontSize * 0.35;
+      const wind = exp.wind * s.fontSize * 2.8;
 
       for (const d of drops) {
         d.vy += grav * dt;
-        d.vx += Math.sin(t * 0.0022 + d.phase) * sway * dt;
+        d.vx += (wind + Math.sin(t * 0.0022 + d.phase) * sway) * dt;
         d.vx *= 1 - 1.8 * dt;
         d.x += d.vx * dt;
         d.y += d.vy * dt;
