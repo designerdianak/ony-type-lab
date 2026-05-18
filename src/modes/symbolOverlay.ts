@@ -4,12 +4,8 @@ import { applyMultiplyBlend, clearNeutral } from '../utils/canvas';
 import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
 import type { ModeController, ModeSnapshot } from './types';
 
-/** Символы, которые обычно есть в кастомных шрифтах (без редкого юникода) */
-const GLYPH_OVERLAY_POOL = '0123456789?!@#%&*+-=:/<>[]{}';
-
-function fontCssAtSize(fontCss: string, sizePx: number): string {
-  return fontCss.replace(/[\d.]+(?=px\b)/, String(Math.round(sizePx)));
-}
+const SYMBOL_POOL =
+  'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789?!@#%&*+-=:/<>[]{}§$';
 
 type G = {
   char: string;
@@ -17,9 +13,9 @@ type G = {
   bl: number;
   w: number;
   h: number;
+  /** 0 = только базовая буква, 1 = оверлей включён */
   active: number;
   sym: string;
-  rot: number;
 };
 
 export function createSymbolOverlayMode(
@@ -30,13 +26,18 @@ export function createSymbolOverlayMode(
   let glyphs: G[] = [];
   let layoutSig = '';
   let tickerFn: (() => void) | null = null;
-  let clickHandler: ((e: MouseEvent) => void) | null = null;
-  let moveHandler: ((e: PointerEvent) => void) | null = null;
+  let pointerHandler: ((e: PointerEvent) => void) | null = null;
   let frame = 0;
   let lastCanvasClearNonce = 0;
 
-  function pickSym() {
-    return GLYPH_OVERLAY_POOL[Math.floor(Math.random() * GLYPH_OVERLAY_POOL.length)]!;
+  function pickSym(baseChar: string) {
+    let s = SYMBOL_POOL[Math.floor(Math.random() * SYMBOL_POOL.length)]!;
+    if (Math.random() < 0.35) {
+      for (let t = 0; t < 4 && s === baseChar; t++) {
+        s = SYMBOL_POOL[Math.floor(Math.random() * SYMBOL_POOL.length)]!;
+      }
+    }
+    return s;
   }
 
   function rebuild() {
@@ -45,15 +46,15 @@ export function createSymbolOverlayMode(
     const ox = (s.w - tw) * 0.5;
     const oy = s.h * 0.55;
     const lays = layoutGlyphs(ctx, s.text, s.fontCss, s.fontSize, s.letterSpacing, ox, oy);
+    const allOn = s.visual.symbol.interaction === 'alwaysOn';
     glyphs = lays.map((g) => ({
       char: g.char,
       x: g.x,
       bl: g.baseline,
       w: g.w,
       h: g.h,
-      active: s.visual.symbol.interaction === 'alwaysOn' ? 1 : 0,
-      sym: pickSym(),
-      rot: Math.random() * Math.PI,
+      active: allOn ? 1 : 0,
+      sym: pickSym(g.char),
     }));
   }
 
@@ -67,21 +68,21 @@ export function createSymbolOverlayMode(
   }
 
   function hit(px: number, py: number): number {
-    for (let i = 0; i < glyphs.length; i++) {
+    for (let i = glyphs.length - 1; i >= 0; i--) {
       const g = glyphs[i]!;
-      const pad = 6;
+      const pad = 4;
       if (px >= g.x - pad && px <= g.x + g.w + pad && py >= g.bl - g.h - pad && py <= g.bl + pad) return i;
     }
     return -1;
   }
 
-  function pokeNear(px: number, py: number, r: number) {
-    const r2 = r * r;
-    for (let i = 0; i < glyphs.length; i++) {
-      const g = glyphs[i]!;
-      const cx = g.x + g.w * 0.5;
-      const cy = g.bl - g.h * 0.5;
-      if ((px - cx) ** 2 + (py - cy) ** 2 <= r2) g.active = 1;
+  function toggleSlot(idx: number) {
+    const g = glyphs[idx]!;
+    if (g.active > 0.5) {
+      g.active = 0;
+    } else {
+      g.active = 1;
+      g.sym = pickSym(g.char);
     }
   }
 
@@ -94,18 +95,19 @@ export function createSymbolOverlayMode(
       frame = 0;
     }
     ensure();
+
     clearNeutral(ctx, s.w, s.h, s.visual.stageBackground);
-    applyMultiplyBlend(ctx, s.visual.multiplyBlend);
-    const t = performance.now();
+
     const always = s.visual.symbol.interaction === 'alwaysOn';
     const frozen = s.visual.sceneFrozen;
+    const overlayAlpha = 0.45 + s.visual.symbol.symbolDensity * 0.5;
 
     if (!frozen) {
       frame += 1;
       const every = Math.max(4, Math.round(s.visual.symbol.swapEveryFrames));
       if (frame % every === 0) {
         for (const g of glyphs) {
-          if (always || g.active > 0.2) g.sym = pickSym();
+          if (always || g.active > 0.5) g.sym = pickSym(g.char);
         }
       }
     }
@@ -113,51 +115,48 @@ export function createSymbolOverlayMode(
     ctx.save();
     ctx.font = s.fontCss;
     ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'left';
+
     for (let i = 0; i < glyphs.length; i++) {
       const g = glyphs[i]!;
-      const fill =
-        always || g.active > 0.05
-          ? colorForGlyph({
-              mode: s.visual.colorMode,
-              monochrome: s.visual.monochromeColor,
-              seed: s.visual.rainbowSeed,
-              index: i,
-              total: glyphs.length,
-            })
-          : '#0a0a0a';
-      if (!always && g.active > 0 && g.active < 1) g.active = Math.min(1, g.active + 0.08);
-      ctx.fillStyle = fill;
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = colorForGlyph({
+        mode: s.visual.colorMode,
+        monochrome: s.visual.monochromeColor,
+        seed: s.visual.rainbowSeed,
+        index: i,
+        total: glyphs.length,
+      });
       ctx.fillText(g.char, g.x, g.bl);
     }
     ctx.restore();
 
+    const useMultiply = s.visual.multiplyBlend;
     ctx.save();
-    ctx.textBaseline = 'middle';
-    ctx.textAlign = 'center';
-    const symSize = Math.max(14, s.fontSize * 0.32 * s.visual.symbol.symbolDensity);
-    ctx.font = fontCssAtSize(s.fontCss, symSize);
+    ctx.font = s.fontCss;
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'left';
+    ctx.globalCompositeOperation = useMultiply ? 'multiply' : 'source-over';
+
     for (let i = 0; i < glyphs.length; i++) {
       const g = glyphs[i]!;
-      const on = always || g.active > 0.2;
+      const on = always || g.active > 0.5;
       if (!on) continue;
-      if (!frozen) g.rot += 0.0028 * (s.animationEnabled ? 1 : 0.15);
-      const cx = g.x + g.w * 0.5;
-      const cy = g.bl - g.h * 0.52 + Math.sin(t * 0.00085 + i) * 2.5;
-      ctx.save();
-      ctx.translate(cx, cy);
-      ctx.rotate(g.rot);
-      ctx.globalAlpha = 0.72;
+
+      ctx.globalAlpha = overlayAlpha;
       ctx.fillStyle = colorForGlyph({
         mode: s.visual.colorMode,
         monochrome: s.visual.monochromeColor,
-        seed: s.visual.rainbowSeed + 3,
-        index: i + 4,
+        seed: s.visual.rainbowSeed + 7,
+        index: i + 2,
         total: glyphs.length + 4,
       });
-      ctx.fillText(g.sym, 0, 0);
-      ctx.restore();
+      ctx.fillText(g.sym, g.x, g.bl);
     }
     ctx.restore();
+
+    applyMultiplyBlend(ctx, false);
   }
 
   return {
@@ -167,32 +166,23 @@ export function createSymbolOverlayMode(
       lastCanvasClearNonce = getSnap().visual.canvasClearNonce ?? 0;
       tickerFn = () => tick();
       gsap.ticker.add(tickerFn);
-      clickHandler = (ev: MouseEvent) => {
-        const s = getSnap();
-        if (s.visual.symbol.interaction !== 'clickToPaint') return;
+
+      pointerHandler = (ev: PointerEvent) => {
+        const snap = getSnap();
+        if (snap.visual.sceneFrozen) return;
+        if (snap.visual.symbol.interaction === 'alwaysOn') return;
         const r = canvas.getBoundingClientRect();
         const idx = hit(ev.clientX - r.left, ev.clientY - r.top);
-        if (idx >= 0) glyphs[idx]!.active = 1;
+        if (idx >= 0) toggleSlot(idx);
       };
-      moveHandler = (ev: PointerEvent) => {
-        const s = getSnap();
-        if (s.visual.sceneFrozen) return;
-        if (s.visual.symbol.interaction !== 'clickToPaint') return;
-        const r = canvas.getBoundingClientRect();
-        const px = ev.clientX - r.left;
-        const py = ev.clientY - r.top;
-        pokeNear(px, py, Math.max(48, s.fontSize * 0.85));
-      };
-      canvas.addEventListener('click', clickHandler);
-      canvas.addEventListener('pointermove', moveHandler);
+
+      canvas.addEventListener('pointerdown', pointerHandler);
     },
     stop() {
       if (tickerFn) gsap.ticker.remove(tickerFn);
       tickerFn = null;
-      if (clickHandler) canvas.removeEventListener('click', clickHandler);
-      if (moveHandler) canvas.removeEventListener('pointermove', moveHandler);
-      clickHandler = null;
-      moveHandler = null;
+      if (pointerHandler) canvas.removeEventListener('pointerdown', pointerHandler);
+      pointerHandler = null;
     },
     dispose() {
       this.stop();

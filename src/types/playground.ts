@@ -8,7 +8,7 @@ export type LabModeId =
 
 export type ColorModeId = 'monochrome' | 'rainbow';
 
-export type SymbolInteractionId = 'clickToPaint' | 'alwaysOn';
+export type SymbolInteractionId = 'clickToggle' | 'alwaysOn';
 
 export interface LabModeDefinition {
   id: LabModeId;
@@ -26,57 +26,53 @@ export const LAB_MODES: LabModeDefinition[] = [
 ];
 
 export interface ExpansionSettings {
-  cloneAmount: number;
-  /** Насколько далеко от центра буквы появляются клоны, px (разброс) */
-  cloneSpawnDistance: number;
-  spreadForce: number;
-  collisionSpacing: number;
-  autoGrow: boolean;
-  /** импульс от столкновений (естественное толкание) */
-  collisionImpulse: number;
+  /** плотность водопада (капель на активную букву) */
+  waterfallDensity: number;
+  /** горизонтальный разброс падающих букв */
+  spread: number;
+  /** скорость падения */
+  fallSpeed: number;
+  /** лёгкое покачивание при падении */
+  sway: number;
 }
 
 export interface BloomSettings {
-  shapeSize: number;
-  growSpeed: number;
-  dissolveSpeed: number;
-  /** сила размытия пятен (при включённом Blur), 0 = почти без, 1 = сильное «bloom» как в референсе */
-  shapeBlur: number;
-  blur: boolean;
-  multiply: boolean;
-  motionIntensity: number;
-  /** 0 = реже фигуры, 1 = плотнее */
-  figureDensity: number;
-  /** амплитуда «растительного» покачивания */
-  plantOrganic: number;
-  /** как быстро буквы возвращаются на место и проявляются после «чернил» (пружина + микродрейф) */
-  letterReturn: number;
-  /** баланс: меньше = дольше живёт графика, больше = быстрее исчезает */
-  graphicFade: number;
-  /** Насколько далеко буквы «улетают» под давлением графики (множитель силы) */
-  letterScatter: number;
-  /** >1 — овалы качаются медленнее дольше; <1 — быстрее */
-  ovalSwayDuration: number;
+  /** радиус зоны влияния курсора */
+  interactionRadius: number;
+  /** сила смещения букв от курсора */
+  displacementStrength: number;
+  /** плотность типографического следа */
+  trailAmount: number;
+  /** длительность затухания следа */
+  trailLifetime: number;
+  /** скорость пружинного возврата букв */
+  returnSpeed: number;
+  /** вытягивание фрагментов следа по скорости */
+  trailStretch: number;
+  /** разброс размера фрагментов следа */
+  trailSizeVariance: number;
 }
 
 export interface AssemblySettings {
   overlap: boolean;
-  /** призрачные копии при слёте к букве */
+  /** эхо-след в полёте к слову */
   inwardCopies: number;
-  /** радиус старта прилёта */
+  /** завихрение потока */
   orbitRadius: number;
-  /** скорость пружинной сборки в слово */
+  /** сила притяжения к слову */
   mergeSpeed: number;
-  /** пиксельная сетка микродрейфа (1 = выкл) */
+  /** шаг пиксельного глитча в покое */
   pixelJump: number;
-  /** амплитуда нестабильного покоя */
+  /** скорость бесконечного потока */
   drift: number;
 }
 
 export interface SymbolSettings {
+  /** клик по букве — вкл/выкл оверлей; всегда — на всех буквах */
   interaction: SymbolInteractionId;
+  /** сила оверлея (прозрачность символа) */
   symbolDensity: number;
-  /** смена символа каждые N кадров тикера */
+  /** смена случайного символа каждые N кадров */
   swapEveryFrames: number;
 }
 
@@ -137,40 +133,32 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
   monochromeColor: '#0a0a0a',
   rainbowSeed: 1,
   expansion: {
-    cloneAmount: 3,
-    cloneSpawnDistance: 14,
-    spreadForce: 0.42,
-    collisionSpacing: 2,
-    autoGrow: false,
-    collisionImpulse: 0.72,
+    waterfallDensity: 0.55,
+    spread: 0.45,
+    fallSpeed: 0.48,
+    sway: 0.35,
   },
   bloom: {
-    shapeSize: 1.08,
-    growSpeed: 1.02,
-    dissolveSpeed: 0.92,
-    shapeBlur: 0.82,
-    blur: true,
-    multiply: false,
-    motionIntensity: 0.56,
-    figureDensity: 0.66,
-    plantOrganic: 0.58,
-    letterReturn: 0.44,
-    graphicFade: 0.44,
-    letterScatter: 1.18,
-    ovalSwayDuration: 1.05,
+    interactionRadius: 1.05,
+    displacementStrength: 0.52,
+    trailAmount: 0.62,
+    trailLifetime: 0.72,
+    returnSpeed: 0.58,
+    trailStretch: 0.48,
+    trailSizeVariance: 0.38,
   },
   assembly: {
     overlap: true,
-    inwardCopies: 12,
-    orbitRadius: 1.15,
-    mergeSpeed: 0.28,
-    pixelJump: 3,
-    drift: 0.42,
+    inwardCopies: 10,
+    orbitRadius: 1.05,
+    mergeSpeed: 0.38,
+    pixelJump: 4,
+    drift: 0.52,
   },
   symbol: {
-    interaction: 'alwaysOn',
-    symbolDensity: 0.65,
-    swapEveryFrames: 20,
+    interaction: 'clickToggle',
+    symbolDensity: 0.72,
+    swapEveryFrames: 14,
   },
   elastic: {
     fillSpacing: 0.48,
