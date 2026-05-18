@@ -161,22 +161,32 @@ export function createBloomPaintMode(
     const fs = s.fontSize;
     const radius = fs * (0.55 + b.interactionRadius * 1.15);
     const maxPush = fs * (0.08 + b.displacementStrength * 0.38);
-    const springK = 4 + b.returnSpeed * 22;
-    const damp = 2.8 + b.returnSpeed * 6.5;
-    const trailSpdGate = 6 + b.trailAmount * 40;
+    const springK = 1.8 + b.returnSpeed * 12;
+    const damp = 1.1 + b.returnSpeed * 3.2;
+    const trailSpdGate = 1.5 + b.trailAmount * 18;
 
     for (const g of glyphs) {
       const { cx, cy } = glyphCenter(g);
       const dx = cx - mouseX;
       const dy = cy - mouseY;
       const dist = Math.hypot(dx, dy);
+      const disp = Math.hypot(g.ox, g.oy);
 
       if (dist < radius && dist > 0.5) {
         const influence = smoothstep(radius, radius * 0.12, dist);
         const falloff = influence * influence;
         const push = maxPush * falloff;
-        g.vx += (dx / dist) * push * 28 * dt;
-        g.vy += (dy / dist) * push * 28 * dt;
+        g.vx += (dx / dist) * push * 48 * dt;
+        g.vy += (dy / dist) * push * 48 * dt;
+
+        if (b.trailAmount > 0.02 && (disp > fs * 0.012 || falloff > 0.2)) {
+          const pushVx = (dx / dist) * push * 12;
+          const pushVy = (dy / dist) * push * 12;
+          const emitN = Math.min(3, 1 + Math.floor(falloff * disp * 0.08));
+          for (let i = 0; i < emitN; i++) {
+            spawnTrail(cx, cy, pushVx + g.vx, pushVy + g.vy, Math.max(8, disp * 14), b, s, g.index);
+          }
+        }
       }
 
       g.vx += (-g.ox * springK - g.vx * damp) * dt;
@@ -185,11 +195,12 @@ export function createBloomPaintMode(
       g.oy += g.vy * dt;
 
       const speed = Math.hypot(g.vx, g.vy);
-      if (speed > trailSpdGate && b.trailAmount > 0.02) {
-        const emitRate = b.trailAmount * (0.35 + Math.min(1.4, speed * 0.018));
-        const count = Math.min(4, Math.floor(emitRate * speed * dt * 0.12));
+      const motion = Math.max(speed, disp * 22);
+      if (motion > trailSpdGate && b.trailAmount > 0.02) {
+        const emitRate = b.trailAmount * (0.55 + Math.min(2.2, motion * 0.028));
+        const count = Math.min(6, Math.floor(emitRate * motion * dt * 0.14));
         for (let i = 0; i < count; i++) {
-          spawnTrail(cx, cy, g.vx, g.vy, speed, b, s, g.index);
+          spawnTrail(cx, cy, g.vx, g.vy, motion, b, s, g.index);
         }
       }
 

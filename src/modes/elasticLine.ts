@@ -1,14 +1,13 @@
 import gsap from 'gsap';
-import { colorForGlyph, lerp } from '../utils/colors';
+import { colorForGlyph } from '../utils/colors';
 import { applyMultiplyBlend, clearNeutral } from '../utils/canvas';
 import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
 import { safeReleasePointerCapture } from '../utils/pointerCapture';
 import type { ModeController, ModeSnapshot } from './types';
 
 /**
- * Ломаная «резиновая» линия: якоря под каждой буквой (низ по центру),
- * пружина между соседями, перетаскивание ломает линию; копии тянущейся
- * буквы заполняют сегменты — в духе noomalooma / counter-archiving.
+ * Перетаскивание буквы: после отпускания якорь остаётся на месте,
+ * зазор между соседями заполняется непрозрачными копиями этой буквы.
  */
 export function createElasticLineMode(
   canvas: HTMLCanvasElement,
@@ -17,11 +16,11 @@ export function createElasticLineMode(
 ): ModeController {
   let chars: string[] = [];
   let widths: number[] = [];
-  /** Нижний центр глифа (для baseline + поворота) */
   let bx: number[] = [];
   let by: number[] = [];
   let initBx: number[] = [];
   let initBy: number[] = [];
+  let restLen: number[] = [];
   let layoutSig = '';
   let dragIdx = -1;
   let capturePointerId: number | null = null;
@@ -46,6 +45,10 @@ export function createElasticLineMode(
     by = lays.map(() => bl);
     initBx = bx.slice();
     initBy = by.slice();
+    restLen = [];
+    for (let i = 0; i < chars.length - 1; i++) {
+      restLen.push(Math.hypot(bx[i + 1]! - bx[i]!, by[i + 1]! - by[i]!));
+    }
     dragIdx = -1;
   }
 
@@ -73,25 +76,6 @@ export function createElasticLineMode(
     return best;
   }
 
-  function relaxRope() {
-    const s = getSnap();
-    const n = bx.length;
-    if (n < 3) return;
-    const k = 0.14 * (s.animationEnabled ? 1 : 0.65);
-    const home = 0.012;
-    for (let pass = 0; pass < 4; pass++) {
-      for (let i = 1; i < n - 1; i++) {
-        if (i === dragIdx) continue;
-        const tx = (bx[i - 1]! + bx[i + 1]!) * 0.5;
-        const ty = (by[i - 1]! + by[i + 1]!) * 0.5;
-        bx[i] = lerp(bx[i]!, tx, k);
-        by[i] = lerp(by[i]!, ty, k);
-        bx[i] = lerp(bx[i]!, initBx[i]!, home);
-        by[i] = lerp(by[i]!, initBy[i]!, home);
-      }
-    }
-  }
-
   function segmentAngle(x0: number, y0: number, x1: number, y1: number): number {
     return Math.atan2(y1 - y0, x1 - x0);
   }
@@ -106,10 +90,10 @@ export function createElasticLineMode(
     ch: string,
   ) {
     const len = Math.hypot(x1 - x0, y1 - y0);
-    if (len < spacing * 1.2) return;
+    if (len < spacing * 0.85) return;
     const ang = Math.atan2(y1 - y0, x1 - x0);
-    let t = spacing * 0.55;
-    while (t < len - spacing * 0.45) {
+    let t = spacing * 0.5;
+    while (t < len - spacing * 0.4) {
       const u = t / len;
       out.push({
         x: x0 + (x1 - x0) * u,
@@ -121,40 +105,31 @@ export function createElasticLineMode(
     }
   }
 
-  function gapFills(dr: number): { x: number; y: number; ang: number; ch: string; a: number }[] {
+  function collectGapFills(): { x: number; y: number; ang: number; ch: string }[] {
     const s = getSnap();
-    if (dr < 0 || dr >= chars.length) return [];
-    const ch = chars[dr]!;
-    const sp = Math.max(6, (widths[dr] ?? s.fontSize * 0.5) * s.visual.elastic.fillSpacing);
-    const out: { x: number; y: number; ang: number; ch: string; a: number }[] = [];
-    if (dr > 0) {
-      sampleSegment(bx[dr - 1]!, by[dr - 1]!, bx[dr]!, by[dr]!, sp, out, ch);
-    }
-    if (dr < chars.length - 1) {
-      sampleSegment(bx[dr]!, by[dr]!, bx[dr + 1]!, by[dr + 1]!, sp, out, ch);
-    }
-    for (const o of out) o.a = 0.22;
-    return out;
-  }
-
-  /** Копии вдоль любых растянутых сегментов — остаются после отпускания */
-  function stretchGapFills(): { x: number; y: number; ang: number; ch: string; a: number }[] {
-    const s = getSnap();
-    const out: { x: number; y: number; ang: number; ch: string; a: number }[] = [];
+    const out: { x: number; y: number; ang: number; ch: string }[] = [];
     for (let i = 0; i < chars.length - 1; i++) {
       const x0 = bx[i]!;
       const y0 = by[i]!;
       const x1 = bx[i + 1]!;
       const y1 = by[i + 1]!;
-      const rest = Math.hypot(initBx[i + 1]! - initBx[i]!, initBy[i + 1]! - initBy[i]!);
+      const rest = restLen[i] ?? Math.hypot(x1 - x0, y1 - y0);
       const curr = Math.hypot(x1 - x0, y1 - y0);
-      if (curr <= rest * 1.04) continue;
-      const ch = chars[i + 1] ?? chars[i]!;
-      const sp = Math.max(6, (widths[i + 1] ?? widths[i] ?? s.fontSize * 0.5) * s.visual.elastic.fillSpacing);
+      if (curr <= rest * 1.02) continue;
+      const thresh = s.fontSize * 0.04;
+      const movedL = Math.hypot(bx[i]! - initBx[i]!, by[i]! - initBy[i]!) > thresh;
+      const movedR = Math.hypot(bx[i + 1]! - initBx[i + 1]!, by[i + 1]! - initBy[i + 1]!) > thresh;
+      let ch = chars[i + 1] ?? chars[i]!;
+      if (dragIdx >= 0 && (i === dragIdx - 1 || i === dragIdx)) {
+        ch = chars[dragIdx]!;
+      } else if (movedL && !movedR) {
+        ch = chars[i]!;
+      } else if (movedR && !movedL) {
+        ch = chars[i + 1]!;
+      }
+      const sp = Math.max(5, (widths[i + 1] ?? widths[i] ?? s.fontSize * 0.5) * s.visual.elastic.fillSpacing);
       sampleSegment(x0, y0, x1, y1, sp, out, ch);
     }
-    const alpha = dragIdx >= 0 ? 0.2 : 0.34;
-    for (const o of out) o.a = alpha;
     return out;
   }
 
@@ -189,22 +164,18 @@ export function createElasticLineMode(
     } else {
       ensure();
     }
-    const frozen = s.visual.sceneFrozen;
-    if (!frozen) relaxRope();
 
     clearNeutral(ctx, s.w, s.h, s.visual.stageBackground);
     applyMultiplyBlend(ctx, s.visual.multiplyBlend);
 
-    const fills =
-      dragIdx >= 0 ? [...stretchGapFills(), ...gapFills(dragIdx)] : stretchGapFills();
-
+    const fills = collectGapFills();
     for (const f of fills) {
       drawLetterAt(
         f.ch,
         f.x,
         f.y,
         f.ang,
-        f.a,
+        1,
         colorForGlyph({
           mode: s.visual.colorMode,
           monochrome: s.visual.monochromeColor,
@@ -243,6 +214,17 @@ export function createElasticLineMode(
     }
   }
 
+  function commitDrag() {
+    if (dragIdx < 0) return;
+    const i = dragIdx;
+    if (i > 0) {
+      restLen[i - 1] = Math.hypot(bx[i]! - bx[i - 1]!, by[i]! - by[i - 1]!);
+    }
+    if (i < chars.length - 1) {
+      restLen[i] = Math.hypot(bx[i + 1]! - bx[i]!, by[i + 1]! - by[i]!);
+    }
+  }
+
   return {
     start() {
       layoutSig = '';
@@ -265,12 +247,11 @@ export function createElasticLineMode(
       move = (e: PointerEvent) => {
         if (dragIdx < 0 || getSnap().visual.sceneFrozen) return;
         const r = canvas.getBoundingClientRect();
-        const px = e.clientX - r.left;
-        const py = e.clientY - r.top;
-        bx[dragIdx] = px - grabOx;
-        by[dragIdx] = py - grabOy;
+        bx[dragIdx] = e.clientX - r.left - grabOx;
+        by[dragIdx] = e.clientY - r.top - grabOy;
       };
       up = () => {
+        commitDrag();
         safeReleasePointerCapture(canvas, capturePointerId);
         capturePointerId = null;
         dragIdx = -1;

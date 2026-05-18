@@ -121,13 +121,16 @@ export function createSymbolOverlayMode(
       const g = glyphs[i]!;
       ctx.globalAlpha = 1;
       ctx.globalCompositeOperation = 'source-over';
-      ctx.fillStyle = colorForGlyph({
-        mode: s.visual.colorMode,
-        monochrome: s.visual.monochromeColor,
-        seed: s.visual.rainbowSeed,
-        index: i,
-        total: glyphs.length,
-      });
+      ctx.fillStyle =
+        s.visual.colorMode === 'monochrome'
+          ? s.visual.monochromeColor
+          : colorForGlyph({
+              mode: s.visual.colorMode,
+              monochrome: s.visual.monochromeColor,
+              seed: s.visual.rainbowSeed,
+              index: i,
+              total: glyphs.length,
+            });
       ctx.fillText(g.char, g.x, g.bl);
     }
     ctx.restore();
@@ -146,7 +149,7 @@ export function createSymbolOverlayMode(
 
       ctx.globalAlpha = overlayAlpha;
       ctx.fillStyle = colorForGlyph({
-        mode: s.visual.colorMode,
+        mode: 'rainbow',
         monochrome: s.visual.monochromeColor,
         seed: s.visual.rainbowSeed + 7,
         index: i + 2,
