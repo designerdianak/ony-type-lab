@@ -1,9 +1,11 @@
 export type LabModeId =
   | 'expansion'
+  | 'colorStack'
   | 'bloom'
   | 'assembly'
   | 'symbol'
   | 'elastic'
+  | 'trailWalker'
   | 'softBody';
 
 export type ColorModeId = 'monochrome' | 'rainbow';
@@ -17,85 +19,85 @@ export interface LabModeDefinition {
 }
 
 export const LAB_MODES: LabModeDefinition[] = [
-  { id: 'expansion', label: 'Expansion', shortLabel: 'Exp' },
+  { id: 'expansion', label: 'Ripple', shortLabel: 'Ripple' },
+  { id: 'colorStack', label: 'Volume', shortLabel: 'Volume' },
   { id: 'bloom', label: 'Bloom Paint', shortLabel: 'Bloom' },
   { id: 'assembly', label: 'Assembly', shortLabel: 'Asm' },
   { id: 'symbol', label: 'Symbol Overlay', shortLabel: 'Sym' },
-  { id: 'elastic', label: 'Elastic Line', shortLabel: 'Elastic' },
+  { id: 'elastic', label: 'Gradient Flow', shortLabel: 'Flow' },
+  { id: 'trailWalker', label: 'Trail Walker', shortLabel: 'Walk' },
   { id: 'softBody', label: 'Вихрь', shortLabel: 'Вихрь' },
 ];
 
+/** Контурные волны от букв (дубликатор). */
 export interface ExpansionSettings {
-  /** плотность водопада (капель на активную букву) */
-  waterfallDensity: number;
-  /** горизонтальный разброс падающих букв */
-  spread: number;
-  /** скорость падения */
-  fallSpeed: number;
-  /** лёгкое покачивание при падении */
-  sway: number;
-  /** ветер: −1 влево, +1 вправо */
-  wind: number;
+  ringSpacing: number;
+  strokeWidth: number;
+  growSpeed: number;
+  strokeColor: string;
+}
+
+/** Залитые смещённые копии (объём). */
+export interface ColorStackSettings {
+  duplicateCount: number;
+  angleDeg: number;
+  offsetX: number;
+  offsetY: number;
+  stackColor: string;
+  useRainbowStack: boolean;
 }
 
 export interface BloomSettings {
-  /** радиус зоны влияния курсора */
   interactionRadius: number;
-  /** сила смещения букв от курсора */
   displacementStrength: number;
-  /** плотность типографического следа */
   trailAmount: number;
-  /** длительность затухания следа */
   trailLifetime: number;
-  /** скорость пружинного возврата букв */
   returnSpeed: number;
-  /** вытягивание фрагментов следа по скорости */
   trailStretch: number;
-  /** разброс размера фрагментов следа */
   trailSizeVariance: number;
 }
 
 export interface AssemblySettings {
   overlap: boolean;
-  /** эхо-след в полёте к слову */
   inwardCopies: number;
-  /** завихрение потока */
   orbitRadius: number;
-  /** сила притяжения к слову */
   mergeSpeed: number;
-  /** шаг пиксельного глитча в покое */
   pixelJump: number;
-  /** скорость бесконечного потока */
   drift: number;
 }
 
 export interface SymbolSettings {
-  /** клик по букве — вкл/выкл оверлей; всегда — на всех буквах */
   interaction: SymbolInteractionId;
-  /** сила оверлея (прозрачность символа) */
   symbolDensity: number;
-  /** смена случайного символа каждые N кадров */
   swapEveryFrames: number;
 }
 
+/** Градиентный поток от букв. */
 export interface ElasticSettings {
-  /** расстояние между копиями в зазоре */
-  fillSpacing: number;
+  flowLength: number;
+  directionDeg: number;
+  stepSize: number;
+  randomGradient: boolean;
+  colorA: string;
+  colorB: string;
+  colorC: string;
+}
+
+/** Блуждающий текст со следом. */
+export interface TrailWalkerSettings {
+  speed: number;
+  trailLength: number;
+  worminess: number;
+  trailColor: string;
 }
 
 export interface SoftBodySettings {
   overlap: boolean;
-  /** повторы слова в потоке: 1 = одна строка, больше = плотнее «вихрь» */
   vortexCopies: number;
-  /** глубина «эхо»-слоя в направлении потока */
   trailDepth: number;
-  /** завихрение поля */
   swirl: number;
-  /** скорость основного течения */
   flowSpeed: number;
-  /** пиксельная сетка микросмещения (1 = выкл) */
   pixelJump: number;
-  /** сила и характер потока */
   drift: number;
 }
 
@@ -103,22 +105,24 @@ export interface PlaygroundVisualState {
   text: string;
   fontSize: number;
   letterSpacing: number;
-  /** Фон сцены: hex/rgb или слово `transparent` для PNG с альфой */
   stageBackground: string;
-  /** Увеличить, чтобы режимы сбросили нарисованное состояние (без смены настроек) */
   canvasClearNonce: number;
   multiplyBlend: boolean;
   animationEnabled: boolean;
-  /** «Стоп»: зафиксировать кадр для экспорта */
   sceneFrozen: boolean;
   colorMode: ColorModeId;
   monochromeColor: string;
   rainbowSeed: number;
+  /** 0 = прозрачно, 1 = полностью непрозрачно */
+  effectOpacity: number;
+  forceUppercase: boolean;
   expansion: ExpansionSettings;
+  colorStack: ColorStackSettings;
   bloom: BloomSettings;
   assembly: AssemblySettings;
   symbol: SymbolSettings;
   elastic: ElasticSettings;
+  trailWalker: TrailWalkerSettings;
   softBody: SoftBodySettings;
 }
 
@@ -134,12 +138,21 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
   colorMode: 'monochrome',
   monochromeColor: '#0a0a0a',
   rainbowSeed: 1,
+  effectOpacity: 1,
+  forceUppercase: false,
   expansion: {
-    waterfallDensity: 0.55,
-    spread: 0.45,
-    fallSpeed: 0.48,
-    sway: 0.35,
-    wind: 0,
+    ringSpacing: 5,
+    strokeWidth: 1.2,
+    growSpeed: 0.35,
+    strokeColor: 'auto',
+  },
+  colorStack: {
+    duplicateCount: 28,
+    angleDeg: 38,
+    offsetX: 0.35,
+    offsetY: 1.15,
+    stackColor: '#e91e8c',
+    useRainbowStack: false,
   },
   bloom: {
     interactionRadius: 1.05,
@@ -164,7 +177,19 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
     swapEveryFrames: 14,
   },
   elastic: {
-    fillSpacing: 0.48,
+    flowLength: 42,
+    directionDeg: 90,
+    stepSize: 0.55,
+    randomGradient: true,
+    colorA: '#ff2bd6',
+    colorB: '#6b2cff',
+    colorC: '#00c8ff',
+  },
+  trailWalker: {
+    speed: 0.42,
+    trailLength: 36,
+    worminess: 0.35,
+    trailColor: '#e91e8c',
   },
   softBody: {
     overlap: true,

@@ -1,6 +1,7 @@
 import gsap from 'gsap';
 import { colorForGlyph } from '../utils/colors';
 import { applyMultiplyBlend, clearNeutral } from '../utils/canvas';
+import { effectOpacity } from '../utils/visualAlpha';
 import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
 import type { ModeController, ModeSnapshot } from './types';
 import type { AssemblySettings } from '../types/playground';
@@ -129,6 +130,7 @@ export function createAssemblyMode(
     const dt = Math.min(0.034, Math.max(0.008, (t - lastTickTime) / 1000));
     lastTickTime = t;
     const anim = s.animationEnabled ? 1 : 0.4;
+    const master = effectOpacity(s.visual);
 
     if (!frozen && systems.length > 0) {
       frame += 1;
@@ -175,7 +177,7 @@ export function createAssemblyMode(
     ctx.textBaseline = 'alphabetic';
 
     for (const sys of systems) {
-      ctx.globalAlpha = 0.12 * anim;
+      ctx.globalAlpha = 0.12 * anim * master;
       ctx.fillStyle = colorForGlyph({
         mode: s.visual.colorMode,
         monochrome: s.visual.monochromeColor,
@@ -198,12 +200,12 @@ export function createAssemblyMode(
         for (let k = echoes; k >= 1; k--) {
           const trail = k / echoes;
           const lag = (4 + asm.orbitRadius * 10) * trail * fly;
-          ctx.globalAlpha = fly * (0.06 + 0.2 * (1 - trail)) * anim;
+          ctx.globalAlpha = fly * (0.06 + 0.2 * (1 - trail)) * anim * master;
           ctx.fillStyle = p.color;
           ctx.fillText(p.char, drawX + ex * lag, drawY + ey * lag);
         }
 
-        ctx.globalAlpha = (p.reached ? 0.75 : 0.92) * anim;
+        ctx.globalAlpha = (p.reached ? 0.75 : 0.92) * anim * master;
         ctx.fillStyle = p.color;
         ctx.fillText(p.char, drawX, drawY);
       }

@@ -1,6 +1,7 @@
 import gsap from 'gsap';
 import { colorForGlyph, lerp, smoothstep } from '../utils/colors';
 import { applyMultiplyBlend, clearNeutral } from '../utils/canvas';
+import { effectOpacity } from '../utils/visualAlpha';
 import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
 import type { ModeController, ModeSnapshot } from './types';
 import type { SoftBodySettings } from '../types/playground';
@@ -234,6 +235,7 @@ export function createSoftBodyMode(
     }
 
     const echoes = Math.max(2, Math.min(12, Math.round(cfg.trailDepth * 0.45)));
+    const master = effectOpacity(s.visual);
 
     ctx.save();
     ctx.font = s.fontCss;
@@ -260,7 +262,7 @@ export function createSoftBodyMode(
         ctx.translate(tx, ty);
         ctx.rotate(trailRot);
         ctx.scale(trailScale, trailScale);
-        ctx.globalAlpha = ea * (0.04 + 0.14 * (1 - trail)) * anim;
+        ctx.globalAlpha = ea * (0.04 + 0.14 * (1 - trail)) * anim * master;
         ctx.fillStyle = colorForGlyph({
           mode: s.visual.colorMode,
           monochrome: s.visual.monochromeColor,
@@ -276,7 +278,7 @@ export function createSoftBodyMode(
       ctx.translate(g.x + g.jx, g.y + g.jy);
       ctx.rotate(g.rot);
       ctx.scale(g.scale, g.scale);
-      ctx.globalAlpha = ea * (0.55 + 0.45 * anim);
+      ctx.globalAlpha = ea * (0.55 + 0.45 * anim) * master;
       ctx.fillStyle = colorForGlyph({
         mode: s.visual.colorMode,
         monochrome: s.visual.monochromeColor,
