@@ -324,6 +324,25 @@ export default function App() {
               format={(n) => n.toFixed(2)}
               onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, growSpeed: v } }))}
             />
+            <LabeledSlider
+              label="Сила контура"
+              min={0.2}
+              max={3}
+              step={0.05}
+              freeInput
+              value={visual.expansion.offsetScale}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, offsetScale: v } }))}
+            />
+            <LabeledSlider
+              label="Горизонт. полосы"
+              min={0}
+              max={1}
+              step={0.02}
+              value={visual.expansion.waveFlatten}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, waveFlatten: v } }))}
+            />
             <div className="lab__field lab__field--row">
               <label htmlFor="exp-stroke">Цвет контура</label>
               <input

@@ -29,12 +29,16 @@ export const LAB_MODES: LabModeDefinition[] = [
   { id: 'softBody', label: 'Вихрь', shortLabel: 'Вихрь' },
 ];
 
-/** Контурные волны от букв (дубликатор). */
+/** Контурные волны от букв (дубликатор / offset). */
 export interface ExpansionSettings {
   ringSpacing: number;
   strokeWidth: number;
   growSpeed: number;
   strokeColor: string;
+  /** насколько сильно растёт контур за один шаг */
+  offsetScale: number;
+  /** переход в горизонтальные полосы к краям (0…1) */
+  waveFlatten: number;
 }
 
 /** Залитые смещённые копии (объём). */
@@ -141,10 +145,12 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
   effectOpacity: 1,
   forceUppercase: false,
   expansion: {
-    ringSpacing: 5,
-    strokeWidth: 1.2,
-    growSpeed: 0.35,
+    ringSpacing: 4,
+    strokeWidth: 1,
+    growSpeed: 0.28,
     strokeColor: 'auto',
+    offsetScale: 1,
+    waveFlatten: 0.55,
   },
   colorStack: {
     duplicateCount: 28,
