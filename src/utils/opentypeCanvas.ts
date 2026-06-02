@@ -1,12 +1,6 @@
 import type opentype from 'opentype.js';
 
-/** Обводка контура глифа opentype (без заливки). */
-export function strokeGlyphPath(
-  ctx: CanvasRenderingContext2D,
-  path: opentype.Path,
-  stroke: string,
-  lineWidth: number,
-) {
+function tracePath(ctx: CanvasRenderingContext2D, path: opentype.Path) {
   ctx.beginPath();
   for (const cmd of path.commands) {
     switch (cmd.type) {
@@ -29,9 +23,26 @@ export function strokeGlyphPath(
         break;
     }
   }
+}
+
+/** Обводка контура глифа opentype (без заливки). */
+export function strokeGlyphPath(
+  ctx: CanvasRenderingContext2D,
+  path: opentype.Path,
+  stroke: string,
+  lineWidth: number,
+) {
+  tracePath(ctx, path);
   ctx.strokeStyle = stroke;
   ctx.lineWidth = lineWidth;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
   ctx.stroke();
+}
+
+/** Заливка контура глифа. */
+export function fillGlyphPath(ctx: CanvasRenderingContext2D, path: opentype.Path, fill: string) {
+  tracePath(ctx, path);
+  ctx.fillStyle = fill;
+  ctx.fill();
 }
