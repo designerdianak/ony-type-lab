@@ -2,79 +2,38 @@ import gsap from 'gsap';
 import { colorForGlyph } from '../utils/colors';
 import { applyMultiplyBlend, clearNeutral } from '../utils/canvas';
 import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
+import { effectOpacity } from '../utils/visualAlpha';
 import type { ModeController, ModeSnapshot } from './types';
 
-type RootGlyph = {
-  char: string;
-  x: number;
-  y: number;
-  abl: number;
-  abr: number;
-  aba: number;
-  abd: number;
-};
-
-type WaterDrop = {
-  char: string;
-  slot: number;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  alpha: number;
-  abl: number;
-  abr: number;
-  aba: number;
-  abd: number;
-  phase: number;
-};
-
-function inkMetrics(ctx: CanvasRenderingContext2D, char: string, fontCss: string) {
-  ctx.save();
-  ctx.font = fontCss;
-  ctx.textBaseline = 'alphabetic';
-  const m = ctx.measureText(char);
-  const abl = m.actualBoundingBoxLeft ?? 0;
-  const abr = m.actualBoundingBoxRight ?? m.width;
-  const aba = m.actualBoundingBoxAscent ?? 0;
-  const abd = m.actualBoundingBoxDescent ?? 0;
-  ctx.restore();
-  return { abl, abr, aba, abd };
-}
+type Lay = { char: string; x: number; y: number; w: number; h: number; bl: number };
 
 export function createExpansionMode(
-  canvas: HTMLCanvasElement,
+  _canvas: HTMLCanvasElement,
   ctx: CanvasRenderingContext2D,
   getSnap: () => ModeSnapshot,
 ): ModeController {
-  let roots: RootGlyph[] = [];
-  let drops: WaterDrop[] = [];
-  /** слоты с включённым водопадом */
-  const activeSlots = new Set<number>();
+  let lays: Lay[] = [];
   let layoutSig = '';
   let tickerFn: (() => void) | null = null;
-  let onPointerDown: ((e: PointerEvent) => void) | null = null;
-  let lastCanvasClearNonce = 0;
-  let lastTickTime = performance.now();
-  let emitAcc = 0;
+  let t0 = 0;
 
   function rebuild() {
     const s = getSnap();
-    const fontCss = s.fontCss;
-    const tw = measureLineWidth(ctx, s.text, fontCss, s.letterSpacing);
+    const tw = measureLineWidth(ctx, s.text, s.fontCss, s.letterSpacing);
     const ox = (s.w - tw) * 0.5;
     const oy = s.h * 0.55;
-    const lays = layoutGlyphs(ctx, s.text, fontCss, s.fontSize, s.letterSpacing, ox, oy);
-    roots = lays.map((g) => {
-      const ink = inkMetrics(ctx, g.char, fontCss);
-      return { char: g.char, x: g.x, y: g.baseline, ...ink };
-    });
-    activeSlots.clear();
-    drops = [];
-    emitAcc = 0;
+    const g = layoutGlyphs(ctx, s.text, s.fontCss, s.fontSize, s.letterSpacing, ox, oy);
+    lays = g.map((lg) => ({
+      char: lg.char,
+      x: lg.x,
+      y: lg.y,
+      w: lg.w,
+      h: lg.h,
+      bl: lg.baseline,
+    }));
   }
 
-  function ensureLayout() {
+  function ensure() {
     const s = getSnap();
     const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${s.w}|${s.h}`;
     if (sig !== layoutSig) {
@@ -83,124 +42,68 @@ export function createExpansionMode(
     }
   }
 
-  function hitIndex(px: number, py: number): number {
-    const pad = 2;
-    for (let i = roots.length - 1; i >= 0; i--) {
-      const r = roots[i]!;
-      const left = r.x - r.abl - pad;
-      const right = r.x + r.abr + pad;
-      const top = r.y - r.aba - pad;
-      const bottom = r.y + r.abd + pad;
-      if (px >= left && px <= right && py >= top && py <= bottom) return i;
-    }
-    return -1;
-  }
-
-  function toggleWaterfall(slot: number) {
-    if (activeSlots.has(slot)) {
-      activeSlots.delete(slot);
-      drops = drops.filter((d) => d.slot !== slot);
-    } else {
-      activeSlots.add(slot);
-    }
-  }
-
-  function spawnDrop(slot: number) {
-    const s = getSnap();
-    const root = roots[slot];
-    if (!root) return;
+  function strokeColor(s: ModeSnapshot, index: number) {
     const exp = s.visual.expansion;
-    const spread = exp.spread * s.fontSize * 0.12;
-    const ink = inkMetrics(ctx, root.char, s.fontCss);
-    drops.push({
-      char: root.char,
-      slot,
-      x: root.x + (Math.random() - 0.5) * spread,
-      y: root.y - s.fontSize * (0.05 + Math.random() * 0.08),
-      vx: (Math.random() - 0.5) * exp.sway * 12 + exp.wind * s.fontSize * 0.35,
-      vy: exp.fallSpeed * (0.35 + Math.random() * 0.25),
-      alpha: 0.35 + Math.random() * 0.45,
-      ...ink,
-      phase: Math.random() * Math.PI * 2,
+    if (exp.strokeColor !== 'auto' && exp.strokeColor) return exp.strokeColor;
+    return colorForGlyph({
+      mode: s.visual.colorMode,
+      monochrome: s.visual.monochromeColor,
+      seed: s.visual.rainbowSeed,
+      index,
+      total: lays.length + 2,
     });
   }
 
   function tick() {
     const s = getSnap();
-    const cn = s.visual.canvasClearNonce ?? 0;
-    if (cn !== lastCanvasClearNonce) {
-      lastCanvasClearNonce = cn;
-      layoutSig = '';
-    }
-    ensureLayout();
-
+    ensure();
     clearNeutral(ctx, s.w, s.h, s.visual.stageBackground);
     applyMultiplyBlend(ctx, s.visual.multiplyBlend);
 
-    const frozen = s.visual.sceneFrozen;
     const exp = s.visual.expansion;
-    const t = performance.now();
-    const dt = Math.min(0.034, Math.max(0.008, (t - lastTickTime) / 1000));
-    lastTickTime = t;
-
-    if (!frozen) {
-      const rate = 2 + exp.waterfallDensity * 28;
-      emitAcc += dt * rate * activeSlots.size;
-      while (emitAcc >= 1) {
-        emitAcc -= 1;
-        if (activeSlots.size === 0) break;
-        const slots = [...activeSlots];
-        const slot = slots[Math.floor(Math.random() * slots.length)]!;
-        spawnDrop(slot);
-      }
-
-      const grav = s.fontSize * (1.8 + exp.fallSpeed * 4.5);
-      const sway = exp.sway * s.fontSize * 0.35;
-      const wind = exp.wind * s.fontSize * 2.8;
-
-      for (const d of drops) {
-        d.vy += grav * dt;
-        d.vx += (wind + Math.sin(t * 0.0022 + d.phase) * sway) * dt;
-        d.vx *= 1 - 1.8 * dt;
-        d.x += d.vx * dt;
-        d.y += d.vy * dt;
-        d.alpha *= 1 - 0.15 * dt;
-      }
-
-      drops = drops.filter(
-        (d) => d.y < s.h + s.fontSize && d.alpha > 0.06 && activeSlots.has(d.slot),
-      );
-    }
+    const alpha = effectOpacity(s.visual);
+    const fs = s.fontSize;
+    const spacing = Math.max(1, exp.ringSpacing);
+    const maxR = Math.hypot(s.w, s.h) * 0.72;
+    const ringCount = Math.ceil(maxR / spacing) + 2;
+    const speed = 0.08 + exp.growSpeed * 0.55;
+    const t = s.visual.animationEnabled && !s.visual.sceneFrozen ? (performance.now() - t0) * 0.001 : 0;
 
     ctx.save();
     ctx.font = s.fontCss;
     ctx.textBaseline = 'alphabetic';
     ctx.textAlign = 'left';
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
 
-    for (const d of drops) {
-      ctx.globalAlpha = d.alpha;
-      ctx.fillStyle = colorForGlyph({
-        mode: s.visual.colorMode,
-        monochrome: s.visual.monochromeColor,
-        seed: s.visual.rainbowSeed,
-        index: d.slot,
-        total: roots.length,
-      });
-      ctx.fillText(d.char, d.x, d.y);
-    }
+    for (let gi = 0; gi < lays.length; gi++) {
+      const g = lays[gi]!;
+      const cx = g.x + g.w * 0.5;
+      const cy = g.bl - g.h * 0.5;
+      const col = strokeColor(s, gi);
 
-    for (let i = 0; i < roots.length; i++) {
-      const r = roots[i]!;
-      const active = activeSlots.has(i);
-      ctx.globalAlpha = active ? 1 : 0.92;
-      ctx.fillStyle = colorForGlyph({
-        mode: s.visual.colorMode,
-        monochrome: s.visual.monochromeColor,
-        seed: s.visual.rainbowSeed,
-        index: i,
-        total: roots.length,
-      });
-      ctx.fillText(r.char, r.x, r.y);
+      for (let ri = 0; ri < ringCount; ri++) {
+        const base = ri / ringCount;
+        const phase = (base + t * speed) % 1;
+        const scale = 1 + phase * (maxR / Math.max(fs, 1));
+        const ringAlpha = (1 - phase) * (1 - phase) * alpha;
+        if (ringAlpha < 0.02) continue;
+
+        ctx.save();
+        ctx.globalAlpha = ringAlpha;
+        ctx.strokeStyle = col;
+        ctx.lineWidth = Math.max(0.25, exp.strokeWidth / scale);
+        ctx.translate(cx, cy);
+        ctx.scale(scale, scale);
+        ctx.translate(-cx, -cy);
+        ctx.strokeText(g.char, g.x, g.bl);
+        ctx.restore();
+      }
+
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = col;
+      ctx.lineWidth = exp.strokeWidth;
+      ctx.strokeText(g.char, g.x, g.bl);
     }
     ctx.restore();
   }
@@ -208,28 +111,14 @@ export function createExpansionMode(
   return {
     start() {
       layoutSig = '';
-      lastCanvasClearNonce = getSnap().visual.canvasClearNonce ?? 0;
-      lastTickTime = performance.now();
+      t0 = performance.now();
       rebuild();
       tickerFn = () => tick();
       gsap.ticker.add(tickerFn);
-
-      onPointerDown = (e: PointerEvent) => {
-        if (getSnap().visual.sceneFrozen) return;
-        const rect = canvas.getBoundingClientRect();
-        const px = e.clientX - rect.left;
-        const py = e.clientY - rect.top;
-        const idx = hitIndex(px, py);
-        if (idx >= 0) toggleWaterfall(idx);
-      };
-
-      canvas.addEventListener('pointerdown', onPointerDown);
     },
     stop() {
       if (tickerFn) gsap.ticker.remove(tickerFn);
       tickerFn = null;
-      if (onPointerDown) canvas.removeEventListener('pointerdown', onPointerDown);
-      onPointerDown = null;
     },
     dispose() {
       this.stop();

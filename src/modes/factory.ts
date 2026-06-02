@@ -2,10 +2,12 @@ import type { LabModeId } from '../types/playground';
 import type { ModeController, ModeSnapshot } from './types';
 import { createAssemblyMode } from './assembly';
 import { createBloomPaintMode } from './bloomPaint';
-import { createElasticLineMode } from './elasticLine';
+import { createColorStackMode } from './colorStack';
 import { createExpansionMode } from './expansion';
+import { createGradientFlowMode } from './gradientFlow';
 import { createSoftBodyMode } from './softBody';
 import { createSymbolOverlayMode } from './symbolOverlay';
+import { createTrailWalkerMode } from './trailWalker';
 
 export function createModeController(
   mode: LabModeId,
@@ -16,6 +18,8 @@ export function createModeController(
   switch (mode) {
     case 'expansion':
       return createExpansionMode(canvas, ctx, getSnap);
+    case 'colorStack':
+      return createColorStackMode(canvas, ctx, getSnap);
     case 'bloom':
       return createBloomPaintMode(canvas, ctx, getSnap);
     case 'assembly':
@@ -23,7 +27,9 @@ export function createModeController(
     case 'symbol':
       return createSymbolOverlayMode(canvas, ctx, getSnap);
     case 'elastic':
-      return createElasticLineMode(canvas, ctx, getSnap);
+      return createGradientFlowMode(canvas, ctx, getSnap);
+    case 'trailWalker':
+      return createTrailWalkerMode(canvas, ctx, getSnap);
     case 'softBody':
       return createSoftBodyMode(canvas, ctx, getSnap);
     default: {

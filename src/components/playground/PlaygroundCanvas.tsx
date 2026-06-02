@@ -5,6 +5,7 @@ import type { ModeSnapshot } from '../../modes/types';
 import type { LabModeId } from '../../types/playground';
 import type { PlaygroundVisualState } from '../../types/playground';
 import { setupHiDpiCanvas } from '../../utils/canvas';
+import { useCanvasTextInput } from '../../hooks/useCanvasTextInput';
 
 export type PlaygroundCanvasProps = {
   mode: LabModeId;
@@ -18,6 +19,9 @@ export type PlaygroundCanvasProps = {
   animationEnabled: boolean;
   opentypeFont: opentype.Font | null;
   onCanvasReady?: (el: HTMLCanvasElement) => void;
+  onTextChange?: (text: string) => void;
+  forceUppercase?: boolean;
+  stageRef?: React.RefObject<HTMLElement | null>;
 };
 
 export function PlaygroundCanvas({
@@ -32,8 +36,13 @@ export function PlaygroundCanvas({
   animationEnabled,
   opentypeFont,
   onCanvasReady,
+  onTextChange,
+  forceUppercase = false,
+  stageRef,
 }: PlaygroundCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const localStageRef = useRef<HTMLDivElement | null>(null);
+  const focusRef = stageRef ?? localStageRef;
   const controllerRef = useRef<ReturnType<typeof createModeController> | null>(null);
   const dataRef = useRef({
     mode,
@@ -63,6 +72,14 @@ export function PlaygroundCanvas({
     h: dataRef.current.h,
   };
 
+  useCanvasTextInput({
+    text,
+    onTextChange: onTextChange ?? (() => {}),
+    forceUppercase,
+    enabled: fontReady && Boolean(onTextChange),
+    containerRef: focusRef,
+  });
+
   useEffect(() => {
     const el = canvasRef.current;
     if (!el) return;
@@ -74,8 +91,7 @@ export function PlaygroundCanvas({
     const onSpaceStop = (e: KeyboardEvent) => {
       if (e.code !== 'Space') return;
       if (e.repeat) return;
-      if (!(e.target instanceof HTMLElement)) return;
-      if (e.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+      if (e.target instanceof HTMLElement && e.target.closest('.lab__panel')) return;
       e.preventDefault();
       controllerRef.current?.interruptInteraction();
     };
@@ -129,7 +145,7 @@ export function PlaygroundCanvas({
   }, [mode, fontReady]);
 
   return (
-    <div className="lab__canvas-wrap">
+    <div ref={localStageRef} className="lab__canvas-wrap" tabIndex={-1}>
       <canvas ref={canvasRef} className="lab__canvas" />
     </div>
   );

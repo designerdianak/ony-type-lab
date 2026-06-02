@@ -174,3 +174,31 @@
   color: var(--muted);
   pointer-events: none;
 }
+
+.lab__type-prompt {
+  position: absolute;
+  left: 50%;
+  bottom: 2.5rem;
+  transform: translateX(-50%);
+  margin: 0;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  pointer-events: none;
+  text-align: center;
+}
+
+.lab__stage:focus {
+  outline: none;
+}
+
+.slider__num {
+  width: 4.2rem;
+  border: none;
+  border-radius: 8px;
+  padding: 0.15rem 0.35rem;
+  background: var(--bg);
+  font-size: 0.72rem;
+  color: var(--ink);
+  text-align: right;
+}

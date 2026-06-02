@@ -25,17 +25,21 @@ const DEFAULT_WEIGHT =
 function modeHint(mode: LabModeId): string {
   switch (mode) {
     case 'expansion':
-      return 'Клик по букве — водопад; повторный клик — выкл. Статичные буквы не разъезжаются';
+      return 'Контурные волны от букв; растут к краям экрана';
+    case 'colorStack':
+      return 'Залитые копии со смещением — имитация объёма';
     case 'bloom':
-      return 'Веди курсором — буквы слегка отступают; след — отпечаток движения, не кисть';
+      return 'Веди курсором — буквы отступают; след от движения';
     case 'assembly':
-      return 'Бесконечный поток букв собирается в слово; в покое — пиксельный глитч-шаг';
+      return 'Поток букв собирается в слово; в покое — глитч';
     case 'symbol':
-      return 'Слово внизу; поверх — те же шрифт и кегль, multiply. Клик — вкл/выкл символ';
+      return 'Клик — вкл/выкл символ поверх буквы';
     case 'elastic':
-      return 'Тяни букву — копии в зазорах; после отпускания излом сохраняется';
+      return 'Градиентный поток от букв в заданном направлении';
+    case 'trailWalker':
+      return 'Текст блуждает по экрану и оставляет цветной след';
     case 'softBody':
-      return 'Непрерывный поток букв по полю; эхо-след в направлении движения';
+      return 'Непрерывный поток букв по полю; эхо-след';
     default:
       return '';
   }
@@ -47,7 +51,11 @@ export default function App() {
   const [visual, setVisual] = useState<PlaygroundVisualState>(DEFAULT_PLAYGROUND_VISUAL);
   const [familyId, setFamilyId] = useState(DEFAULT_FAMILY);
   const [weightId, setWeightId] = useState(DEFAULT_WEIGHT);
+  const [hasTyped, setHasTyped] = useState(false);
   const canvasElRef = useRef<HTMLCanvasElement | null>(null);
+  const stageRef = useRef<HTMLElement | null>(null);
+
+  const displayText = visual.forceUppercase ? text.toUpperCase() : text;
 
   const family = getFontFamilyById(familyId) ?? FONT_FAMILIES[0]!;
   const weight =
@@ -83,6 +91,7 @@ export default function App() {
     setFamilyId(DEFAULT_FAMILY);
     setWeightId(DEFAULT_WEIGHT);
     setMode('bloom');
+    setHasTyped(false);
   };
 
   const exportPng = () => {
@@ -97,10 +106,10 @@ export default function App() {
     if (!ctx) return;
     const w = c.clientWidth;
     const h = c.clientHeight;
-    const tw = measureLineWidth(ctx, text, fontCss, visual.letterSpacing);
+    const tw = measureLineWidth(ctx, displayText, fontCss, visual.letterSpacing);
     const ox = (w - tw) * 0.5;
     const oy = h * 0.55;
-    const layouts = layoutGlyphs(ctx, text, fontCss, visual.fontSize, visual.letterSpacing, ox, oy);
+    const layouts = layoutGlyphs(ctx, displayText, fontCss, visual.fontSize, visual.letterSpacing, ox, oy);
     const fill =
       visual.colorMode === 'monochrome'
         ? visual.monochromeColor
@@ -123,17 +132,6 @@ export default function App() {
       <aside className="lab__panel">
         <div className="lab__brand">ONY Agency</div>
         <h1 className="lab__title">Typography Lab</h1>
-
-        <div className="lab__field">
-          <label htmlFor="lab-text">Текст</label>
-          <input
-            id="lab-text"
-            type="text"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            maxLength={64}
-          />
-        </div>
 
         <div className="lab__row">
           <RoundButton onClick={resetModeSettings}>Настройки режимов</RoundButton>
@@ -189,18 +187,36 @@ export default function App() {
 
         <LabeledSlider
           label="Кегль"
-          min={18}
-          max={160}
+          min={8}
+          max={200}
+          freeInput
           value={visual.fontSize}
           onChange={(v) => setVisual((s) => ({ ...s, fontSize: v }))}
         />
         <LabeledSlider
           label="Межбуквенный"
-          min={-8}
-          max={48}
+          min={-40}
+          max={120}
+          freeInput
           value={visual.letterSpacing}
           onChange={(v) => setVisual((s) => ({ ...s, letterSpacing: v }))}
         />
+        <LabeledSlider
+          label="Непрозрачность эффекта"
+          min={0}
+          max={1}
+          step={0.01}
+          value={visual.effectOpacity}
+          format={(n) => `${Math.round(n * 100)}%`}
+          onChange={(v) => setVisual((s) => ({ ...s, effectOpacity: v }))}
+        />
+        <div className="lab__row">
+          <RoundToggle
+            label="ВСЕ ЗАГЛАВНЫЕ"
+            pressed={visual.forceUppercase}
+            onChange={(v) => setVisual((s) => ({ ...s, forceUppercase: v }))}
+          />
+        </div>
 
         <div className="lab__row">
           <RoundToggle
@@ -282,49 +298,116 @@ export default function App() {
         {mode === 'expansion' && (
           <>
             <LabeledSlider
-              label="Плотность водопада"
-              min={0.1}
-              max={1}
-              step={0.02}
-              value={visual.expansion.waterfallDensity}
-              format={(n) => n.toFixed(2)}
-              onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, waterfallDensity: v } }))}
+              label="Шаг волн"
+              min={1}
+              max={24}
+              freeInput
+              value={visual.expansion.ringSpacing}
+              onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, ringSpacing: v } }))}
             />
             <LabeledSlider
-              label="Разброс"
+              label="Толщина контура"
+              min={0.2}
+              max={8}
+              step={0.1}
+              freeInput
+              value={visual.expansion.strokeWidth}
+              onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, strokeWidth: v } }))}
+            />
+            <LabeledSlider
+              label="Скорость роста"
               min={0}
-              max={1}
+              max={2}
               step={0.02}
-              value={visual.expansion.spread}
+              freeInput
+              value={visual.expansion.growSpeed}
               format={(n) => n.toFixed(2)}
-              onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, spread: v } }))}
+              onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, growSpeed: v } }))}
+            />
+            <div className="lab__field lab__field--row">
+              <label htmlFor="exp-stroke">Цвет контура</label>
+              <input
+                id="exp-stroke"
+                type="color"
+                value={
+                  visual.expansion.strokeColor === 'auto'
+                    ? visual.monochromeColor
+                    : visual.expansion.strokeColor
+                }
+                onChange={(e) =>
+                  setVisual((s) => ({
+                    ...s,
+                    expansion: { ...s.expansion, strokeColor: e.target.value },
+                  }))
+                }
+              />
+              <RoundToggle
+                label="Режим цвета"
+                pressed={visual.expansion.strokeColor === 'auto'}
+                onChange={(on) =>
+                  setVisual((s) => ({
+                    ...s,
+                    expansion: { ...s.expansion, strokeColor: on ? 'auto' : s.monochromeColor },
+                  }))
+                }
+              />
+            </div>
+          </>
+        )}
+
+        {mode === 'colorStack' && (
+          <>
+            <LabeledSlider
+              label="Копии"
+              min={2}
+              max={80}
+              freeInput
+              value={visual.colorStack.duplicateCount}
+              onChange={(v) => setVisual((s) => ({ ...s, colorStack: { ...s.colorStack, duplicateCount: v } }))}
             />
             <LabeledSlider
-              label="Скорость падения"
-              min={0.1}
-              max={1.2}
-              step={0.02}
-              value={visual.expansion.fallSpeed}
-              format={(n) => n.toFixed(2)}
-              onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, fallSpeed: v } }))}
+              label="Угол"
+              min={-180}
+              max={180}
+              freeInput
+              value={visual.colorStack.angleDeg}
+              onChange={(v) => setVisual((s) => ({ ...s, colorStack: { ...s.colorStack, angleDeg: v } }))}
             />
             <LabeledSlider
-              label="Покачивание"
-              min={0}
-              max={1}
-              step={0.02}
-              value={visual.expansion.sway}
+              label="Смещение X"
+              min={-3}
+              max={3}
+              step={0.05}
+              freeInput
+              value={visual.colorStack.offsetX}
               format={(n) => n.toFixed(2)}
-              onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, sway: v } }))}
+              onChange={(v) => setVisual((s) => ({ ...s, colorStack: { ...s.colorStack, offsetX: v } }))}
             />
             <LabeledSlider
-              label="Ветер"
-              min={-1}
-              max={1}
-              step={0.02}
-              value={visual.expansion.wind}
-              format={(n) => (n < 0 ? '← ' : n > 0 ? '→ ' : '') + Math.abs(n).toFixed(2)}
-              onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, wind: v } }))}
+              label="Смещение Y"
+              min={-3}
+              max={3}
+              step={0.05}
+              freeInput
+              value={visual.colorStack.offsetY}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) => setVisual((s) => ({ ...s, colorStack: { ...s.colorStack, offsetY: v } }))}
+            />
+            <div className="lab__field lab__field--row">
+              <label htmlFor="stack-color">Цвет стека</label>
+              <input
+                id="stack-color"
+                type="color"
+                value={visual.colorStack.stackColor}
+                onChange={(e) =>
+                  setVisual((s) => ({ ...s, colorStack: { ...s.colorStack, stackColor: e.target.value } }))
+                }
+              />
+            </div>
+            <RoundToggle
+              label="Радуга в стеке"
+              pressed={visual.colorStack.useRainbowStack}
+              onChange={(v) => setVisual((s) => ({ ...s, colorStack: { ...s.colorStack, useRainbowStack: v } }))}
             />
           </>
         )}
@@ -491,14 +574,113 @@ export default function App() {
         {mode === 'elastic' && (
           <>
             <LabeledSlider
-              label="Шаг копий в зазоре"
-              min={0.22}
-              max={1.05}
-              step={0.01}
-              value={visual.elastic.fillSpacing}
-              format={(n) => n.toFixed(2)}
-              onChange={(v) => setVisual((s) => ({ ...s, elastic: { ...s.elastic, fillSpacing: v } }))}
+              label="Длина потока"
+              min={4}
+              max={120}
+              freeInput
+              value={visual.elastic.flowLength}
+              onChange={(v) => setVisual((s) => ({ ...s, elastic: { ...s.elastic, flowLength: v } }))}
             />
+            <LabeledSlider
+              label="Направление °"
+              min={-180}
+              max={180}
+              freeInput
+              value={visual.elastic.directionDeg}
+              onChange={(v) => setVisual((s) => ({ ...s, elastic: { ...s.elastic, directionDeg: v } }))}
+            />
+            <LabeledSlider
+              label="Шаг смещения"
+              min={0.1}
+              max={3}
+              step={0.05}
+              freeInput
+              value={visual.elastic.stepSize}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) => setVisual((s) => ({ ...s, elastic: { ...s.elastic, stepSize: v } }))}
+            />
+            <RoundToggle
+              label="Случайный градиент"
+              pressed={visual.elastic.randomGradient}
+              onChange={(v) => setVisual((s) => ({ ...s, elastic: { ...s.elastic, randomGradient: v } }))}
+            />
+            {!visual.elastic.randomGradient && (
+              <>
+                <div className="lab__field lab__field--row">
+                  <label htmlFor="g-a">Цвет A</label>
+                  <input
+                    id="g-a"
+                    type="color"
+                    value={visual.elastic.colorA}
+                    onChange={(e) =>
+                      setVisual((s) => ({ ...s, elastic: { ...s.elastic, colorA: e.target.value } }))
+                    }
+                  />
+                  <label htmlFor="g-b">B</label>
+                  <input
+                    id="g-b"
+                    type="color"
+                    value={visual.elastic.colorB}
+                    onChange={(e) =>
+                      setVisual((s) => ({ ...s, elastic: { ...s.elastic, colorB: e.target.value } }))
+                    }
+                  />
+                  <label htmlFor="g-c">C</label>
+                  <input
+                    id="g-c"
+                    type="color"
+                    value={visual.elastic.colorC}
+                    onChange={(e) =>
+                      setVisual((s) => ({ ...s, elastic: { ...s.elastic, colorC: e.target.value } }))
+                    }
+                  />
+                </div>
+              </>
+            )}
+          </>
+        )}
+
+        {mode === 'trailWalker' && (
+          <>
+            <LabeledSlider
+              label="Скорость"
+              min={0.05}
+              max={2}
+              step={0.02}
+              freeInput
+              value={visual.trailWalker.speed}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) => setVisual((s) => ({ ...s, trailWalker: { ...s.trailWalker, speed: v } }))}
+            />
+            <LabeledSlider
+              label="Длина следа"
+              min={4}
+              max={120}
+              freeInput
+              value={visual.trailWalker.trailLength}
+              onChange={(v) => setVisual((s) => ({ ...s, trailWalker: { ...s.trailWalker, trailLength: v } }))}
+            />
+            <LabeledSlider
+              label="«Червячок»"
+              min={0}
+              max={1}
+              step={0.02}
+              freeInput
+              value={visual.trailWalker.worminess}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) => setVisual((s) => ({ ...s, trailWalker: { ...s.trailWalker, worminess: v } }))}
+            />
+            <div className="lab__field lab__field--row">
+              <label htmlFor="walk-color">Цвет следа</label>
+              <input
+                id="walk-color"
+                type="color"
+                value={visual.trailWalker.trailColor}
+                onChange={(e) =>
+                  setVisual((s) => ({ ...s, trailWalker: { ...s.trailWalker, trailColor: e.target.value } }))
+                }
+              />
+            </div>
           </>
         )}
 
@@ -565,10 +747,15 @@ export default function App() {
         )}
       </aside>
 
-      <main className="lab__stage">
+      <main
+        ref={stageRef}
+        className="lab__stage"
+        tabIndex={0}
+        onPointerDown={() => stageRef.current?.focus()}
+      >
         <PlaygroundCanvas
           mode={mode}
-          text={text}
+          text={displayText}
           fontCss={fontCss}
           fontUrl={fontUrl}
           fontReady={fontReady}
@@ -578,7 +765,16 @@ export default function App() {
           animationEnabled={visual.animationEnabled}
           opentypeFont={opentypeFont}
           onCanvasReady={onCanvasReady}
+          onTextChange={(t) => {
+            setHasTyped(true);
+            setText(t);
+          }}
+          forceUppercase={visual.forceUppercase}
+          stageRef={stageRef}
         />
+        {!hasTyped && (
+          <p className="lab__type-prompt">начни вводить текст — кликни на холст и печатай</p>
+        )}
         <div className="lab__hint">{modeHint(mode)}</div>
       </main>
     </div>

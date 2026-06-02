@@ -1,6 +1,7 @@
 import gsap from 'gsap';
 import { colorForGlyph, smoothstep } from '../utils/colors';
 import { applyMultiplyBlend, clearNeutral } from '../utils/canvas';
+import { effectOpacity } from '../utils/visualAlpha';
 import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
 import type { ModeController, ModeSnapshot } from './types';
 import type { BloomSettings } from '../types/playground';
@@ -211,11 +212,13 @@ export function createBloomPaintMode(
   }
 
   function drawTrails(now: number) {
-    const b = getSnap().visual.bloom;
+    const snap = getSnap();
+    const b = snap.visual.bloom;
+    const master = effectOpacity(snap.visual);
     for (const tr of trails) {
       const age = now - tr.born;
       const lifeT = Math.min(1, age / tr.life);
-      const alpha = (1 - lifeT) * (1 - lifeT) * 0.42 * (0.65 + b.trailAmount * 0.35);
+      const alpha = (1 - lifeT) * (1 - lifeT) * 0.42 * (0.65 + b.trailAmount * 0.35) * master;
       if (alpha < 0.01) continue;
 
       ctx.save();
@@ -243,11 +246,12 @@ export function createBloomPaintMode(
 
   function drawGlyphs() {
     const s = getSnap();
+    const master = effectOpacity(s.visual);
     ctx.save();
     ctx.font = s.fontCss;
     ctx.textBaseline = 'alphabetic';
     for (const g of glyphs) {
-      ctx.globalAlpha = 1;
+      ctx.globalAlpha = master;
       ctx.fillStyle = colorForGlyph({
         mode: s.visual.colorMode,
         monochrome: s.visual.monochromeColor,

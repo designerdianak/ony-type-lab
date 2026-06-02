@@ -51,6 +51,40 @@ export function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
 
+function parseHex(hex: string): [number, number, number] | null {
+  const h = hex.replace('#', '').trim();
+  if (h.length === 3) {
+    return [
+      parseInt(h[0]! + h[0], 16),
+      parseInt(h[1]! + h[1], 16),
+      parseInt(h[2]! + h[2], 16),
+    ];
+  }
+  if (h.length === 6) {
+    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+  }
+  return null;
+}
+
+export function lerpColor(a: string, b: string, t: number): string {
+  const ca = parseHex(a);
+  const cb = parseHex(b);
+  if (!ca || !cb) return t < 0.5 ? a : b;
+  const r = Math.round(lerp(ca[0], cb[0], t));
+  const g = Math.round(lerp(ca[1], cb[1], t));
+  const bl = Math.round(lerp(ca[2], cb[2], t));
+  return `rgb(${r},${g},${bl})`;
+}
+
+export function gradientAt(colors: string[], t: number): string {
+  if (colors.length === 0) return '#000';
+  if (colors.length === 1) return colors[0]!;
+  const u = clamp(t, 0, 1) * (colors.length - 1);
+  const i = Math.floor(u);
+  const f = u - i;
+  return lerpColor(colors[i]!, colors[Math.min(i + 1, colors.length - 1)]!, f);
+}
+
 export function clamp(n: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, n));
 }

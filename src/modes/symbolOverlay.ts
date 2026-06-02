@@ -1,6 +1,7 @@
 import gsap from 'gsap';
 import { colorForGlyph } from '../utils/colors';
 import { applyMultiplyBlend, clearNeutral } from '../utils/canvas';
+import { effectOpacity } from '../utils/visualAlpha';
 import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
 import type { ModeController, ModeSnapshot } from './types';
 
@@ -100,7 +101,8 @@ export function createSymbolOverlayMode(
 
     const always = s.visual.symbol.interaction === 'alwaysOn';
     const frozen = s.visual.sceneFrozen;
-    const overlayAlpha = 0.45 + s.visual.symbol.symbolDensity * 0.5;
+    const master = effectOpacity(s.visual);
+    const overlayAlpha = (0.45 + s.visual.symbol.symbolDensity * 0.5) * master;
 
     if (!frozen) {
       frame += 1;
@@ -119,7 +121,7 @@ export function createSymbolOverlayMode(
 
     for (let i = 0; i < glyphs.length; i++) {
       const g = glyphs[i]!;
-      ctx.globalAlpha = 1;
+      ctx.globalAlpha = master;
       ctx.globalCompositeOperation = 'source-over';
       ctx.fillStyle =
         s.visual.colorMode === 'monochrome'
