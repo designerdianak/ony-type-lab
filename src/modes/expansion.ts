@@ -2,19 +2,14 @@ import gsap from 'gsap';
 import type opentype from 'opentype.js';
 import { colorForGlyph } from '../utils/colors';
 import { clearNeutral } from '../utils/canvas';
-import { buildGlyphSdf, drawSdfWarpedHorizontals, type SdfGrid } from '../utils/glyphSdf';
+import { rasterizeGlyphMask, type GlyphSlot } from '../utils/contourField';
+import { drawMaskContourLayer, expandMaskStep } from '../utils/iterativeContours';
 import { fillGlyphPath, strokeGlyphPath } from '../utils/opentypeCanvas';
 import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
 import { effectOpacity } from '../utils/visualAlpha';
 import type { ModeController, ModeSnapshot } from './types';
-import type { GlyphSlot } from '../utils/contourField';
 
 type Lay = { char: string; x: number; bl: number };
-
-function fontCssWithSize(fontCss: string, size: number): string {
-  if (/\d+px/.test(fontCss)) return fontCss.replace(/\d+px/, `${size}px`);
-  return `${fontCss} ${size}px`;
-}
 
 function maskFillColor(stageBackground: string): string | null {
   if (stageBackground === 'transparent') return null;
@@ -28,10 +23,19 @@ export function createExpansionMode(
 ): ModeController {
   let lays: Lay[] = [];
   let layoutSig = '';
-  let sdfSig = '';
+  let maskSig = '';
   let tickerFn: (() => void) | null = null;
   let t0 = 0;
-  let sdfGrid: SdfGrid | null = null;
+
+  let glyphMask: Uint8Array | null = null;
+  let cw = 0;
+  let ch = 0;
+  let cell = 2;
+
+  let advanceMask: Uint8Array | null = null;
+  let advanceRing = 0;
+
+  const segBuf: { x0: number; y0: number; x1: number; y1: number }[] = [];
 
   function readViewport() {
     const r = canvas.getBoundingClientRect();
@@ -48,22 +52,27 @@ export function createExpansionMode(
     lays = g.map((lg) => ({ char: lg.char, x: lg.x, bl: lg.baseline }));
   }
 
-  function rebuildSdf(s: ModeSnapshot) {
+  function rebuildMask(s: ModeSnapshot) {
     const { w, h } = readViewport();
     if (w < 32 || h < 32 || lays.length === 0) {
-      sdfGrid = null;
+      glyphMask = null;
+      advanceMask = null;
       return;
     }
 
     const exp = s.visual.expansion;
-    const detail = exp.waveFlatten;
-    const cell = Math.max(1.25, Math.min(2.5, exp.ringSpacing * (0.28 - detail * 0.08)));
+    cell = Math.max(1.25, Math.min(2.75, exp.ringSpacing * 0.38));
     const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${w}|${h}|${cell}`;
-    if (sig === sdfSig && sdfGrid) return;
+    if (sig === maskSig && glyphMask) return;
 
-    sdfSig = sig;
+    maskSig = sig;
     const slots: GlyphSlot[] = lays;
-    sdfGrid = buildGlyphSdf(w, h, cell, slots, s.fontCss, s.fontSize, s.opentypeFont);
+    const raster = rasterizeGlyphMask(w, h, cell, slots, s.fontCss, s.fontSize, s.opentypeFont);
+    glyphMask = raster.mask;
+    cw = raster.cw;
+    ch = raster.ch;
+    advanceMask = new Uint8Array(glyphMask);
+    advanceRing = 0;
   }
 
   function ensure() {
@@ -72,10 +81,10 @@ export function createExpansionMode(
     const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${w}|${h}`;
     if (sig !== layoutSig) {
       layoutSig = sig;
-      sdfSig = '';
+      maskSig = '';
       rebuild();
     }
-    rebuildSdf(s);
+    rebuildMask(s);
   }
 
   function strokeColor(s: ModeSnapshot) {
@@ -90,51 +99,50 @@ export function createExpansionMode(
     });
   }
 
-  function drawForegroundLetter(
+  function stepParams(s: ModeSnapshot) {
+    const exp = s.visual.expansion;
+    const spacing = Math.max(3, exp.ringSpacing);
+    const radiusCells = Math.max(1, spacing / cell) * (0.65 + exp.offsetScale * 0.45);
+    const smoothPasses = Math.round(1 + exp.waveFlatten * 3);
+    const threshold = 0.42 - exp.waveFlatten * 0.12;
+    return { spacing, radiusCells, smoothPasses, threshold };
+  }
+
+  function advanceToRing(target: number, s: ModeSnapshot) {
+    if (!glyphMask || !advanceMask) return;
+    const { radiusCells, smoothPasses, threshold } = stepParams(s);
+
+    if (target < advanceRing) {
+      advanceMask = new Uint8Array(glyphMask);
+      advanceRing = 0;
+    }
+
+    while (advanceRing < target) {
+      advanceMask = expandMaskStep(advanceMask, cw, ch, radiusCells, smoothPasses, threshold);
+      advanceRing++;
+    }
+  }
+
+  function drawLetterVector(
     s: ModeSnapshot,
     col: string,
     lw: number,
     alpha: number,
-    font: opentype.Font | null,
-    maskFill: string | null,
+    font: opentype.Font,
+    fill: string | null,
   ) {
     const fs = s.fontSize;
-    const pad = Math.max(3, lw * 2.5);
-
     ctx.save();
     ctx.globalAlpha = alpha;
-
-    if (font) {
-      for (const g of lays) {
-        const letter = font.getPath(g.char, g.x, g.bl, fs);
-        const mask = font.getPath(g.char, g.x, g.bl, fs + pad);
-        if (maskFill) fillGlyphPath(ctx, mask, maskFill);
-        else {
-          ctx.globalCompositeOperation = 'destination-out';
-          fillGlyphPath(ctx, mask, 'rgba(0,0,0,1)');
-          ctx.globalCompositeOperation = 'source-over';
-        }
-        strokeGlyphPath(ctx, letter, col, lw);
+    for (const g of lays) {
+      const path = font.getPath(g.char, g.x, g.bl, fs);
+      if (fill) fillGlyphPath(ctx, path, fill);
+      else {
+        ctx.globalCompositeOperation = 'destination-out';
+        fillGlyphPath(ctx, path, 'rgba(0,0,0,1)');
+        ctx.globalCompositeOperation = 'source-over';
       }
-    } else {
-      ctx.textBaseline = 'alphabetic';
-      ctx.textAlign = 'left';
-      for (const g of lays) {
-        ctx.font = fontCssWithSize(s.fontCss, fs + pad);
-        if (maskFill) {
-          ctx.fillStyle = maskFill;
-          ctx.fillText(g.char, g.x, g.bl);
-        } else {
-          ctx.globalCompositeOperation = 'destination-out';
-          ctx.fillStyle = 'rgba(0,0,0,1)';
-          ctx.fillText(g.char, g.x, g.bl);
-          ctx.globalCompositeOperation = 'source-over';
-        }
-        ctx.font = s.fontCss;
-        ctx.strokeStyle = col;
-        ctx.lineWidth = lw;
-        ctx.strokeText(g.char, g.x, g.bl);
-      }
+      strokeGlyphPath(ctx, path, col, lw);
     }
     ctx.restore();
   }
@@ -146,55 +154,52 @@ export function createExpansionMode(
 
     ensure();
     clearNeutral(ctx, w, h, s.visual.stageBackground);
-    if (!sdfGrid || lays.length === 0) return;
+    if (!glyphMask || !advanceMask || lays.length === 0) return;
 
     const exp = s.visual.expansion;
     const alpha = effectOpacity(s.visual);
-    const spacing = Math.max(4, exp.ringSpacing);
     const lw = Math.max(0.35, exp.strokeWidth);
     const col = strokeColor(s);
-    const maskFill = maskFillColor(s.visual.stageBackground);
+    const fill = maskFillColor(s.visual.stageBackground);
+    const { spacing, radiusCells, smoothPasses, threshold } = stepParams(s);
 
     const t = s.visual.animationEnabled && !s.visual.sceneFrozen ? (performance.now() - t0) * 0.001 : 0;
-    // ~1 с цикл при 30 fps, как в референсном MP4
-    const phase = t * spacing * (24 + exp.growSpeed * 12);
+    const ringPhase = t * (22 + exp.growSpeed * 10);
+    const baseRing = Math.floor(ringPhase);
+
+    const visibleRings = Math.min(72, Math.ceil(Math.max(w, h) / spacing) + 10);
+
+    advanceToRing(baseRing, s);
 
     ctx.save();
     ctx.globalCompositeOperation = 'source-over';
 
-    const influenceRadius = Math.max(
-      spacing * 6,
-      s.fontSize * (1.4 + exp.offsetScale * 1.6 + exp.waveFlatten * 2.8),
-    );
-    const strength = s.fontSize * (0.38 + exp.offsetScale * 0.48);
+    let m = advanceMask;
 
-    drawSdfWarpedHorizontals(
-      ctx,
-      sdfGrid,
-      w,
-      h,
-      spacing,
-      influenceRadius,
-      strength,
-      col,
-      lw,
-      alpha,
-      phase,
-    );
+    for (let vi = 0; vi < visibleRings; vi++) {
+      if (baseRing === 0 && vi === 0 && s.opentypeFont) {
+        drawLetterVector(s, col, lw, alpha, s.opentypeFont, fill);
+      } else {
+        drawMaskContourLayer(ctx, m, cw, ch, cell, fill, col, lw, alpha, segBuf);
+      }
 
-    drawForegroundLetter(s, col, lw, alpha, s.opentypeFont, maskFill);
+      m = expandMaskStep(m, cw, ch, radiusCells, smoothPasses, threshold);
+    }
+
     ctx.restore();
   }
 
   return {
     start() {
       layoutSig = '';
-      sdfSig = '';
-      sdfGrid = null;
+      maskSig = '';
+      glyphMask = null;
+      advanceMask = null;
+      advanceRing = 0;
       t0 = performance.now();
       readViewport();
       rebuild();
-      rebuildSdf(getSnap());
+      rebuildMask(getSnap());
       tickerFn = () => tick();
       gsap.ticker.add(tickerFn);
     },

@@ -325,7 +325,7 @@ export default function App() {
               onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, growSpeed: v } }))}
             />
             <LabeledSlider
-              label="Сила контура"
+              label="Шаг расширения"
               min={0.2}
               max={3}
               step={0.05}
@@ -335,7 +335,7 @@ export default function App() {
               onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, offsetScale: v } }))}
             />
             <LabeledSlider
-              label="Горизонтали к краям"
+              label="Сглаживание"
               min={0}
               max={1}
               step={0.02}

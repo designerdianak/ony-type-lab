@@ -29,15 +29,15 @@ export const LAB_MODES: LabModeDefinition[] = [
   { id: 'softBody', label: 'Вихрь', shortLabel: 'Вихрь' },
 ];
 
-/** Контурные волны от букв (дубликатор / offset). */
+/** Вложенные контуры: каждый следующий — расширение предыдущего. */
 export interface ExpansionSettings {
   ringSpacing: number;
   strokeWidth: number;
   growSpeed: number;
   strokeColor: string;
-  /** насколько сильно растёт контур за один шаг */
+  /** шаг расширения относительно «Шаг волн» */
   offsetScale: number;
-  /** зона влияния SDF: меньше — дольше горизонтали у краёв (0…1) */
+  /** сглаживание на каждом шаге (0…1) */
   waveFlatten: number;
 }
 
