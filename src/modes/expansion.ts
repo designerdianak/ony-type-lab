@@ -2,17 +2,13 @@ import gsap from 'gsap';
 import type opentype from 'opentype.js';
 import { colorForGlyph } from '../utils/colors';
 import { clearNeutral } from '../utils/canvas';
-import {
-  chamferDistance,
-  drawContourSegments,
-  extractIsoContour,
-  rasterizeGlyphMask,
-  type GlyphSlot,
-} from '../utils/contourField';
+import { buildGlyphSdf, extractSdfIsoline, sdfMaxDistance, type SdfGrid } from '../utils/glyphSdf';
+import { drawContourSegments } from '../utils/contourField';
 import { fillGlyphPath, strokeGlyphPath } from '../utils/opentypeCanvas';
 import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
 import { effectOpacity } from '../utils/visualAlpha';
 import type { ModeController, ModeSnapshot } from './types';
+import type { GlyphSlot } from '../utils/contourField';
 
 type Lay = { char: string; x: number; bl: number };
 
@@ -33,25 +29,17 @@ export function createExpansionMode(
 ): ModeController {
   let lays: Lay[] = [];
   let layoutSig = '';
-  let fieldSig = '';
+  let sdfSig = '';
   let tickerFn: (() => void) | null = null;
   let t0 = 0;
-  let viewW = 1;
-  let viewH = 1;
-
-  let distField: Float32Array | null = null;
-  let gridCw = 0;
-  let gridCh = 0;
-  let gridCell = 2;
-  let maxDistCells = 0;
+  let sdfGrid: SdfGrid | null = null;
+  let maxDist = 0;
 
   const segBuf: { x0: number; y0: number; x1: number; y1: number }[] = [];
 
   function readViewport() {
     const r = canvas.getBoundingClientRect();
-    viewW = Math.max(1, r.width);
-    viewH = Math.max(1, r.height);
-    return { w: viewW, h: viewH };
+    return { w: Math.max(1, r.width), h: Math.max(1, r.height) };
   }
 
   function rebuild() {
@@ -64,36 +52,23 @@ export function createExpansionMode(
     lays = g.map((lg) => ({ char: lg.char, x: lg.x, bl: lg.baseline }));
   }
 
-  function ensureField(s: ModeSnapshot) {
+  function rebuildSdf(s: ModeSnapshot) {
     const { w, h } = readViewport();
-    if (w < 32 || h < 32 || lays.length === 0) return;
+    if (w < 32 || h < 32 || lays.length === 0) {
+      sdfGrid = null;
+      return;
+    }
 
     const exp = s.visual.expansion;
     const detail = exp.waveFlatten;
-    gridCell = Math.max(1.25, Math.min(3.5, exp.ringSpacing * (0.35 - detail * 0.12)));
-    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${w}|${h}|${gridCell}`;
-    if (sig === fieldSig && distField) return;
+    const cell = Math.max(1.25, Math.min(2.5, exp.ringSpacing * (0.28 - detail * 0.08)));
+    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${w}|${h}|${cell}`;
+    if (sig === sdfSig && sdfGrid) return;
 
-    fieldSig = sig;
+    sdfSig = sig;
     const slots: GlyphSlot[] = lays;
-    const { mask, cw, ch } = rasterizeGlyphMask(
-      w,
-      h,
-      gridCell,
-      slots,
-      s.fontCss,
-      s.fontSize,
-      s.opentypeFont,
-    );
-    gridCw = cw;
-    gridCh = ch;
-    distField = chamferDistance(mask, cw, ch);
-
-    let mx = 0;
-    for (let i = 0; i < distField.length; i++) {
-      if (distField[i]! < 1e6 && distField[i]! > mx) mx = distField[i]!;
-    }
-    maxDistCells = mx;
+    sdfGrid = buildGlyphSdf(w, h, cell, slots, s.fontCss, s.fontSize, s.opentypeFont);
+    maxDist = sdfMaxDistance(sdfGrid.sdf);
   }
 
   function ensure() {
@@ -102,20 +77,20 @@ export function createExpansionMode(
     const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${w}|${h}`;
     if (sig !== layoutSig) {
       layoutSig = sig;
-      fieldSig = '';
+      sdfSig = '';
       rebuild();
     }
-    ensureField(s);
+    rebuildSdf(s);
   }
 
-  function strokeColor(s: ModeSnapshot, index: number) {
+  function strokeColor(s: ModeSnapshot) {
     const exp = s.visual.expansion;
     if (exp.strokeColor !== 'auto' && exp.strokeColor) return exp.strokeColor;
     return colorForGlyph({
       mode: s.visual.colorMode,
       monochrome: s.visual.monochromeColor,
       seed: s.visual.rainbowSeed,
-      index,
+      index: 0,
       total: lays.length + 2,
     });
   }
@@ -132,16 +107,14 @@ export function createExpansionMode(
     const pad = Math.max(3, lw * 2.5);
 
     ctx.save();
-    ctx.globalCompositeOperation = 'source-over';
     ctx.globalAlpha = alpha;
 
     if (font) {
       for (const g of lays) {
         const letter = font.getPath(g.char, g.x, g.bl, fs);
         const mask = font.getPath(g.char, g.x, g.bl, fs + pad);
-        if (maskFill) {
-          fillGlyphPath(ctx, mask, maskFill);
-        } else {
+        if (maskFill) fillGlyphPath(ctx, mask, maskFill);
+        else {
           ctx.globalCompositeOperation = 'destination-out';
           fillGlyphPath(ctx, mask, 'rgba(0,0,0,1)');
           ctx.globalCompositeOperation = 'source-over';
@@ -165,8 +138,6 @@ export function createExpansionMode(
         ctx.font = s.fontCss;
         ctx.strokeStyle = col;
         ctx.lineWidth = lw;
-        ctx.lineJoin = 'round';
-        ctx.lineCap = 'round';
         ctx.strokeText(g.char, g.x, g.bl);
       }
     }
@@ -180,36 +151,34 @@ export function createExpansionMode(
 
     ensure();
     clearNeutral(ctx, w, h, s.visual.stageBackground);
-
-    if (!distField || lays.length === 0) return;
+    if (!sdfGrid || lays.length === 0) return;
 
     const exp = s.visual.expansion;
     const alpha = effectOpacity(s.visual);
-    const spacingCells = Math.max(1.2, exp.ringSpacing / gridCell) * (0.85 + exp.offsetScale * 0.2);
+    const spacing = Math.max(4, exp.ringSpacing);
     const lw = Math.max(0.35, exp.strokeWidth);
-    const col = strokeColor(s, 0);
+    const col = strokeColor(s);
     const maskFill = maskFillColor(s.visual.stageBackground);
 
-    const maxR = maxDistCells + 4;
-    const ringCount = Math.ceil(maxR / spacingCells) + 2;
-    const speed = (0.25 + exp.growSpeed * 0.9) * spacingCells;
     const t = s.visual.animationEnabled && !s.visual.sceneFrozen ? (performance.now() - t0) * 0.001 : 0;
-    const scroll = t * speed;
+    const phase = t * (6 + exp.growSpeed * 28);
 
     ctx.save();
     ctx.globalCompositeOperation = 'source-over';
 
-    for (let ri = ringCount; ri >= 1; ri--) {
-      const iso = ri * spacingCells + (scroll % spacingCells);
-      if (iso < spacingCells * 0.85 || iso > maxR) continue;
+    const maxLevel = Math.min(maxDist, Math.max(w, h) * 0.98);
+    const levelCount = Math.ceil(maxLevel / spacing) + 2;
+
+    for (let li = levelCount; li >= 1; li--) {
+      const level = li * spacing + (phase % spacing);
+      if (level < spacing * 0.45 || level > maxLevel) continue;
 
       const fade =
-        iso > maxR * 0.88 ? 1 - (iso - maxR * 0.88) / (maxR * 0.12 + 0.01) : 1;
-      const ringAlpha = alpha * Math.max(0.25, fade);
+        level > maxLevel * 0.85 ? 1 - (level - maxLevel * 0.85) / (maxLevel * 0.15 + 1) : 1;
 
       segBuf.length = 0;
-      extractIsoContour(distField, gridCw, gridCh, iso, gridCell, segBuf);
-      drawContourSegments(ctx, segBuf, col, lw, ringAlpha);
+      extractSdfIsoline(sdfGrid, level, segBuf);
+      drawContourSegments(ctx, segBuf, col, lw, alpha * Math.max(0.35, fade));
     }
 
     drawForegroundLetter(s, col, lw, alpha, s.opentypeFont, maskFill);
@@ -219,14 +188,12 @@ export function createExpansionMode(
   return {
     start() {
       layoutSig = '';
-      fieldSig = '';
-      distField = null;
+      sdfSig = '';
+      sdfGrid = null;
       t0 = performance.now();
-      readViewport();
       requestAnimationFrame(() => {
-        fieldSig = '';
         rebuild();
-        ensureField(getSnap());
+        rebuildSdf(getSnap());
       });
       tickerFn = () => tick();
       gsap.ticker.add(tickerFn);

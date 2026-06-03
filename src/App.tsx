@@ -25,7 +25,7 @@ const DEFAULT_WEIGHT =
 function modeHint(mode: LabModeId): string {
   switch (mode) {
     case 'expansion':
-      return 'Изолинии вокруг букв (топографический контур); без пересечений';
+      return 'SDF-изолинии вокруг букв; вдали линии горизонтальные';
     case 'colorStack':
       return 'Залитые копии со смещением — имитация объёма';
     case 'bloom':
@@ -335,7 +335,7 @@ export default function App() {
               onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, offsetScale: v } }))}
             />
             <LabeledSlider
-              label="Детализация контуров"
+              label="Детализация SDF"
               min={0}
               max={1}
               step={0.02}
