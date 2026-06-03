@@ -2,14 +2,7 @@ import gsap from 'gsap';
 import type opentype from 'opentype.js';
 import { colorForGlyph } from '../utils/colors';
 import { clearNeutral } from '../utils/canvas';
-import {
-  buildGlyphSdf,
-  drawSdfWarpedHorizontals,
-  extractSdfIsoline,
-  sdfMaxDistance,
-  type SdfGrid,
-} from '../utils/glyphSdf';
-import { drawContourSegments } from '../utils/contourField';
+import { buildGlyphSdf, drawSdfWarpedHorizontals, type SdfGrid } from '../utils/glyphSdf';
 import { fillGlyphPath, strokeGlyphPath } from '../utils/opentypeCanvas';
 import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
 import { effectOpacity } from '../utils/visualAlpha';
@@ -39,9 +32,6 @@ export function createExpansionMode(
   let tickerFn: (() => void) | null = null;
   let t0 = 0;
   let sdfGrid: SdfGrid | null = null;
-  let maxDist = 0;
-
-  const segBuf: { x0: number; y0: number; x1: number; y1: number }[] = [];
 
   function readViewport() {
     const r = canvas.getBoundingClientRect();
@@ -74,7 +64,6 @@ export function createExpansionMode(
     sdfSig = sig;
     const slots: GlyphSlot[] = lays;
     sdfGrid = buildGlyphSdf(w, h, cell, slots, s.fontCss, s.fontSize, s.opentypeFont);
-    maxDist = sdfMaxDistance(sdfGrid.sdf);
   }
 
   function ensure() {
@@ -167,13 +156,17 @@ export function createExpansionMode(
     const maskFill = maskFillColor(s.visual.stageBackground);
 
     const t = s.visual.animationEnabled && !s.visual.sceneFrozen ? (performance.now() - t0) * 0.001 : 0;
-    const phase = t * (6 + exp.growSpeed * 28);
+    // ~1 с цикл при 30 fps, как в референсном MP4
+    const phase = t * spacing * (24 + exp.growSpeed * 12);
 
     ctx.save();
     ctx.globalCompositeOperation = 'source-over';
 
-    const influenceRadius = Math.max(spacing * 4, s.fontSize * (2 + exp.offsetScale * 2));
-    const strength = s.fontSize * (0.42 + exp.offsetScale * 0.5);
+    const influenceRadius = Math.max(
+      spacing * 6,
+      s.fontSize * (1.4 + exp.offsetScale * 1.6 + exp.waveFlatten * 2.8),
+    );
+    const strength = s.fontSize * (0.38 + exp.offsetScale * 0.48);
 
     drawSdfWarpedHorizontals(
       ctx,
@@ -188,23 +181,6 @@ export function createExpansionMode(
       alpha,
       phase,
     );
-
-    const maxLevel = Math.min(maxDist, Math.max(w, h) * 0.98);
-    const levelCount = Math.ceil(maxLevel / spacing) + 2;
-
-    for (let li = levelCount; li >= 1; li--) {
-      const level = li * spacing + (phase % spacing);
-      if (level < 1 || level > maxLevel) continue;
-
-      const fade =
-        level > maxLevel * 0.85 ? 1 - (level - maxLevel * 0.85) / (maxLevel * 0.15 + 1) : 1;
-
-      segBuf.length = 0;
-      extractSdfIsoline(sdfGrid, level, segBuf);
-      if (segBuf.length > 0) {
-        drawContourSegments(ctx, segBuf, col, lw, alpha * Math.max(0.35, fade));
-      }
-    }
 
     drawForegroundLetter(s, col, lw, alpha, s.opentypeFont, maskFill);
     ctx.restore();

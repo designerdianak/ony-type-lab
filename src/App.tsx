@@ -335,7 +335,7 @@ export default function App() {
               onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, offsetScale: v } }))}
             />
             <LabeledSlider
-              label="Детализация SDF"
+              label="Горизонтали к краям"
               min={0}
               max={1}
               step={0.02}

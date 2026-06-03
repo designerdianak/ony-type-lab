@@ -163,9 +163,16 @@ export function extractSdfIsoline(
   extractIsoContour(grid.sdf, grid.cw, grid.ch, level, grid.cell, out);
 }
 
+function sdfFalloff(absD: number, radius: number): number {
+  if (absD >= radius) return 0;
+  const t = 1 - absD / radius;
+  return t * t * (3 - 2 * t);
+}
+
 /**
- * Горизонтальные линии, изогнутые полем SDF (как в референсном псевдокоде).
- * Вдали от буквы линии снова прямые.
+ * Референс 36DaysOfType: горизонтали, чья Y сдвигается от SDF букв;
+ * фаза `phase` двигает кольца наружу (~1 spacing / кадр при 30 fps).
+ * Кривая уровня: y + strength·w·sdf(x,y) = level.
  */
 export function drawSdfWarpedHorizontals(
   ctx: CanvasRenderingContext2D,
@@ -202,8 +209,9 @@ export function drawSdfWarpedHorizontals(
     );
   };
 
-  const r2 = influenceRadius * influenceRadius;
-  const step = Math.max(2, cell * 0.5);
+  const step = Math.max(1.5, Math.min(3, cell * 0.45));
+  const bandCount = Math.ceil((h + spacing * 2) / spacing) + 4;
+  const bandStart = Math.floor((-spacing - phase) / spacing) - 2;
 
   ctx.save();
   ctx.strokeStyle = stroke;
@@ -212,15 +220,18 @@ export function drawSdfWarpedHorizontals(
   ctx.lineJoin = 'round';
   ctx.globalAlpha = alpha;
 
-  for (let baseY = -spacing; baseY < h + spacing; baseY += spacing) {
-    const by = baseY + (phase % spacing);
+  for (let bi = 0; bi < bandCount; bi++) {
+    const level = (bandStart + bi) * spacing + phase;
     ctx.beginPath();
     let started = false;
+
     for (let x = 0; x <= w; x += step) {
-      const d = sample(x, by);
-      const influence = Math.exp(-(d * d) / r2);
-      const offset = influence * strength * Math.sign(d || 1);
-      const y = by + offset;
+      let y = level;
+      for (let iter = 0; iter < 2; iter++) {
+        const d = sample(x, y);
+        const wgt = sdfFalloff(Math.abs(d), influenceRadius);
+        y = level - strength * wgt * d;
+      }
       if (!started) {
         ctx.moveTo(x, y);
         started = true;

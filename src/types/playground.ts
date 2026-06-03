@@ -37,7 +37,7 @@ export interface ExpansionSettings {
   strokeColor: string;
   /** насколько сильно растёт контур за один шаг */
   offsetScale: number;
-  /** переход в горизонтальные полосы к краям (0…1) */
+  /** зона влияния SDF: меньше — дольше горизонтали у краёв (0…1) */
   waveFlatten: number;
 }
 
