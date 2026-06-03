@@ -2,7 +2,13 @@ import gsap from 'gsap';
 import type opentype from 'opentype.js';
 import { colorForGlyph } from '../utils/colors';
 import { clearNeutral } from '../utils/canvas';
-import { buildGlyphSdf, extractSdfIsoline, sdfMaxDistance, type SdfGrid } from '../utils/glyphSdf';
+import {
+  buildGlyphSdf,
+  drawSdfWarpedHorizontals,
+  extractSdfIsoline,
+  sdfMaxDistance,
+  type SdfGrid,
+} from '../utils/glyphSdf';
 import { drawContourSegments } from '../utils/contourField';
 import { fillGlyphPath, strokeGlyphPath } from '../utils/opentypeCanvas';
 import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
@@ -166,19 +172,38 @@ export function createExpansionMode(
     ctx.save();
     ctx.globalCompositeOperation = 'source-over';
 
+    const influenceRadius = Math.max(spacing * 4, s.fontSize * (2 + exp.offsetScale * 2));
+    const strength = s.fontSize * (0.42 + exp.offsetScale * 0.5);
+
+    drawSdfWarpedHorizontals(
+      ctx,
+      sdfGrid,
+      w,
+      h,
+      spacing,
+      influenceRadius,
+      strength,
+      col,
+      lw,
+      alpha,
+      phase,
+    );
+
     const maxLevel = Math.min(maxDist, Math.max(w, h) * 0.98);
     const levelCount = Math.ceil(maxLevel / spacing) + 2;
 
     for (let li = levelCount; li >= 1; li--) {
       const level = li * spacing + (phase % spacing);
-      if (level < spacing * 0.45 || level > maxLevel) continue;
+      if (level < 1 || level > maxLevel) continue;
 
       const fade =
         level > maxLevel * 0.85 ? 1 - (level - maxLevel * 0.85) / (maxLevel * 0.15 + 1) : 1;
 
       segBuf.length = 0;
       extractSdfIsoline(sdfGrid, level, segBuf);
-      drawContourSegments(ctx, segBuf, col, lw, alpha * Math.max(0.35, fade));
+      if (segBuf.length > 0) {
+        drawContourSegments(ctx, segBuf, col, lw, alpha * Math.max(0.35, fade));
+      }
     }
 
     drawForegroundLetter(s, col, lw, alpha, s.opentypeFont, maskFill);
@@ -191,10 +216,9 @@ export function createExpansionMode(
       sdfSig = '';
       sdfGrid = null;
       t0 = performance.now();
-      requestAnimationFrame(() => {
-        rebuild();
-        rebuildSdf(getSnap());
-      });
+      readViewport();
+      rebuild();
+      rebuildSdf(getSnap());
       tickerFn = () => tick();
       gsap.ticker.add(tickerFn);
     },

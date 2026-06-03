@@ -125,8 +125,8 @@ export function buildGlyphSdf(
   const inDist = new Float32Array(cw * ch);
 
   for (let i = 0; i < cw * ch; i++) {
-    outDist[i] = coarse[i] ? INF : 0;
-    inDist[i] = coarse[i] ? 0 : INF;
+    outDist[i] = coarse[i] ? 0 : INF;
+    inDist[i] = coarse[i] ? INF : 0;
   }
 
   edt2d(outDist, cw, ch);
