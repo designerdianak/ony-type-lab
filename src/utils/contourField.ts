@@ -17,12 +17,17 @@ export function rasterizeGlyphMask(
   const ch = Math.max(1, Math.ceil(h / cell));
   const mask = new Uint8Array(cw * ch);
 
+  const dpr = Math.min(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1, 2);
+  const pw = Math.max(1, Math.floor(w * dpr));
+  const ph = Math.max(1, Math.floor(h * dpr));
+
   const off = document.createElement('canvas');
-  off.width = w;
-  off.height = h;
+  off.width = pw;
+  off.height = ph;
   const octx = off.getContext('2d');
   if (!octx) return { mask, cw, ch };
 
+  octx.setTransform(dpr, 0, 0, dpr, 0, 0);
   octx.fillStyle = '#ffffff';
   octx.textBaseline = 'alphabetic';
   octx.textAlign = 'left';
@@ -36,12 +41,15 @@ export function rasterizeGlyphMask(
     for (const g of slots) octx.fillText(g.char, g.x, g.bl);
   }
 
-  const img = octx.getImageData(0, 0, w, h).data;
+  octx.setTransform(1, 0, 0, 1, 0, 0);
+  const img = octx.getImageData(0, 0, pw, ph).data;
   for (let gy = 0; gy < ch; gy++) {
     for (let gx = 0; gx < cw; gx++) {
-      const px = Math.min(w - 1, Math.floor((gx + 0.5) * cell));
-      const py = Math.min(h - 1, Math.floor((gy + 0.5) * cell));
-      const i = (py * w + px) * 4;
+      const lx = Math.min(w - 1, (gx + 0.5) * cell);
+      const ly = Math.min(h - 1, (gy + 0.5) * cell);
+      const px = Math.min(pw - 1, Math.floor(lx * dpr));
+      const py = Math.min(ph - 1, Math.floor(ly * dpr));
+      const i = (py * pw + px) * 4;
       if (img[i + 3]! > 48) mask[gy * cw + gx] = 1;
     }
   }
@@ -136,9 +144,9 @@ export function extractIsoContour(
       if (!lines || lines.length === 0) continue;
 
       const e0 = { x: px(x + lerpT(bl, br, iso)), y: py(y + 1) };
-      const e1 = { x: px(x + 1), y: py(y + 1 + lerpT(br, tr, iso)) };
+      const e1 = { x: px(x + 1), y: py(y + 1 - lerpT(br, tr, iso)) };
       const e2 = { x: px(x + lerpT(tl, tr, iso)), y: py(y) };
-      const e3 = { x: px(x), y: py(y + 1 + lerpT(bl, tl, iso)) };
+      const e3 = { x: px(x), y: py(y + 1 - lerpT(bl, tl, iso)) };
       const edge = [e0, e1, e2, e3];
 
       for (let i = 0; i < lines.length; i += 2) {

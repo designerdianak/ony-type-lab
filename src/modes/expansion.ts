@@ -27,7 +27,7 @@ function maskFillColor(stageBackground: string): string | null {
 }
 
 export function createExpansionMode(
-  _canvas: HTMLCanvasElement,
+  canvas: HTMLCanvasElement,
   ctx: CanvasRenderingContext2D,
   getSnap: () => ModeSnapshot,
 ): ModeController {
@@ -36,6 +36,8 @@ export function createExpansionMode(
   let fieldSig = '';
   let tickerFn: (() => void) | null = null;
   let t0 = 0;
+  let viewW = 1;
+  let viewH = 1;
 
   let distField: Float32Array | null = null;
   let gridCw = 0;
@@ -45,27 +47,38 @@ export function createExpansionMode(
 
   const segBuf: { x0: number; y0: number; x1: number; y1: number }[] = [];
 
+  function readViewport() {
+    const r = canvas.getBoundingClientRect();
+    viewW = Math.max(1, r.width);
+    viewH = Math.max(1, r.height);
+    return { w: viewW, h: viewH };
+  }
+
   function rebuild() {
     const s = getSnap();
+    const { w, h } = readViewport();
     const tw = measureLineWidth(ctx, s.text, s.fontCss, s.letterSpacing);
-    const ox = (s.w - tw) * 0.5;
-    const oy = s.h * 0.55;
+    const ox = (w - tw) * 0.5;
+    const oy = h * 0.55;
     const g = layoutGlyphs(ctx, s.text, s.fontCss, s.fontSize, s.letterSpacing, ox, oy);
     lays = g.map((lg) => ({ char: lg.char, x: lg.x, bl: lg.baseline }));
   }
 
   function ensureField(s: ModeSnapshot) {
+    const { w, h } = readViewport();
+    if (w < 32 || h < 32 || lays.length === 0) return;
+
     const exp = s.visual.expansion;
     const detail = exp.waveFlatten;
     gridCell = Math.max(1.25, Math.min(3.5, exp.ringSpacing * (0.35 - detail * 0.12)));
-    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${s.w}|${s.h}|${gridCell}`;
+    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${w}|${h}|${gridCell}`;
     if (sig === fieldSig && distField) return;
 
     fieldSig = sig;
     const slots: GlyphSlot[] = lays;
     const { mask, cw, ch } = rasterizeGlyphMask(
-      s.w,
-      s.h,
+      w,
+      h,
       gridCell,
       slots,
       s.fontCss,
@@ -85,7 +98,8 @@ export function createExpansionMode(
 
   function ensure() {
     const s = getSnap();
-    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${s.w}|${s.h}`;
+    const { w, h } = readViewport();
+    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${w}|${h}`;
     if (sig !== layoutSig) {
       layoutSig = sig;
       fieldSig = '';
@@ -161,8 +175,11 @@ export function createExpansionMode(
 
   function tick() {
     const s = getSnap();
+    const { w, h } = readViewport();
+    if (w < 32 || h < 32) return;
+
     ensure();
-    clearNeutral(ctx, s.w, s.h, s.visual.stageBackground);
+    clearNeutral(ctx, w, h, s.visual.stageBackground);
 
     if (!distField || lays.length === 0) return;
 
@@ -205,7 +222,12 @@ export function createExpansionMode(
       fieldSig = '';
       distField = null;
       t0 = performance.now();
-      rebuild();
+      readViewport();
+      requestAnimationFrame(() => {
+        fieldSig = '';
+        rebuild();
+        ensureField(getSnap());
+      });
       tickerFn = () => tick();
       gsap.ticker.add(tickerFn);
     },
