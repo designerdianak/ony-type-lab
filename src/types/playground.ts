@@ -31,7 +31,10 @@ export const LAB_MODES: LabModeDefinition[] = [
 
 /** Вложенные контуры: каждый следующий — расширение предыдущего. */
 export interface ExpansionSettings {
+  /** расстояние между контурами (px) */
   ringSpacing: number;
+  /** число контуров (включая букву) */
+  contourCount: number;
   strokeWidth: number;
   growSpeed: number;
   strokeColor: string;
@@ -145,12 +148,13 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
   effectOpacity: 1,
   forceUppercase: false,
   expansion: {
-    ringSpacing: 4,
+    ringSpacing: 6,
+    contourCount: 100,
     strokeWidth: 1,
     growSpeed: 0.28,
     strokeColor: 'auto',
     offsetScale: 1,
-    waveFlatten: 0.55,
+    waveFlatten: 0.5,
   },
   colorStack: {
     duplicateCount: 28,

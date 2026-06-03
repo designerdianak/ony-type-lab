@@ -1,31 +1,26 @@
 import { extractIsoContour } from './contourField';
 
 type Seg = { x0: number; y0: number; x1: number; y1: number };
-type Pt = { x: number; y: number };
+export type Pt = { x: number; y: number };
 
 function ptKey(x: number, y: number): string {
   return `${Math.round(x * 4)},${Math.round(y * 4)}`;
 }
 
-/** Соединяет отрезки marching squares в замкнутые полигоны. */
 export function stitchClosedLoops(segments: Seg[]): Pt[][] {
   if (segments.length === 0) return [];
 
   const adj = new Map<string, Pt[]>();
-  const pointAt = new Map<string, Pt>();
 
   const link = (a: Pt, b: Pt) => {
     const ka = ptKey(a.x, a.y);
     const kb = ptKey(b.x, b.y);
-    pointAt.set(ka, a);
-    pointAt.set(kb, b);
     if (!adj.has(ka)) adj.set(ka, []);
     if (!adj.has(kb)) adj.set(kb, []);
     adj.get(ka)!.push(b);
     adj.get(kb)!.push(a);
   };
 
-  const edgeUsed = new Set<string>();
   const edgeKey = (a: Pt, b: Pt) => {
     const ka = ptKey(a.x, a.y);
     const kb = ptKey(b.x, b.y);
@@ -33,10 +28,7 @@ export function stitchClosedLoops(segments: Seg[]): Pt[][] {
   };
 
   for (const s of segments) {
-    const a = { x: s.x0, y: s.y0 };
-    const b = { x: s.x1, y: s.y1 };
-    link(a, b);
-    edgeUsed.add(edgeKey(a, b));
+    link({ x: s.x0, y: s.y0 }, { x: s.x1, y: s.y1 });
   }
 
   const loops: Pt[][] = [];
@@ -87,7 +79,6 @@ function maskToField(mask: Uint8Array): Float32Array {
   return field;
 }
 
-/** Граница залитой области маски (iso 0.5). */
 export function extractMaskLoops(
   mask: Uint8Array,
   cw: number,
@@ -100,34 +91,37 @@ export function extractMaskLoops(
   return stitchClosedLoops(segBuf);
 }
 
-function dilateDisk(mask: Uint8Array, cw: number, ch: number, radius: number): Uint8Array {
-  const r = Math.max(1, Math.round(radius));
-  const out = new Uint8Array(mask.length);
-  const r2 = r * r;
+/** Быстрое расширение: separable max-filter (приближение диска). */
+function dilateSeparable(src: Uint8Array, dst: Uint8Array, cw: number, ch: number, r: number) {
+  const rad = Math.max(1, Math.round(r));
+  const tmp = new Uint8Array(src.length);
 
   for (let y = 0; y < ch; y++) {
     for (let x = 0; x < cw; x++) {
-      if (!mask[y * cw + x]) continue;
-      for (let dy = -r; dy <= r; dy++) {
-        const yy = y + dy;
-        if (yy < 0 || yy >= ch) continue;
-        for (let dx = -r; dx <= r; dx++) {
-          if (dx * dx + dy * dy > r2) continue;
-          const xx = x + dx;
-          if (xx < 0 || xx >= cw) continue;
-          out[yy * cw + xx] = 1;
-        }
+      let v = 0;
+      for (let dx = -rad; dx <= rad; dx++) {
+        const xx = x + dx;
+        if (xx < 0 || xx >= cw) continue;
+        if (src[y * cw + xx]) v = 1;
       }
+      tmp[y * cw + x] = v;
     }
   }
-  return out;
+
+  for (let y = 0; y < ch; y++) {
+    for (let x = 0; x < cw; x++) {
+      let v = 0;
+      for (let dy = -rad; dy <= rad; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= ch) continue;
+        if (tmp[yy * cw + x]) v = 1;
+      }
+      dst[y * cw + x] = v;
+    }
+  }
 }
 
-function boxBlurMask(mask: Uint8Array, cw: number, ch: number): Float32Array {
-  const src = new Float32Array(mask.length);
-  const tmp = new Float32Array(mask.length);
-  for (let i = 0; i < mask.length; i++) src[i] = mask[i] ? 1 : 0;
-
+function boxBlurMask(mask: Uint8Array, cw: number, ch: number, out: Float32Array) {
   for (let y = 0; y < ch; y++) {
     for (let x = 0; x < cw; x++) {
       let sum = 0;
@@ -138,17 +132,15 @@ function boxBlurMask(mask: Uint8Array, cw: number, ch: number): Float32Array {
         for (let dx = -1; dx <= 1; dx++) {
           const xx = x + dx;
           if (xx < 0 || xx >= cw) continue;
-          sum += src[yy * cw + xx]!;
+          sum += mask[yy * cw + xx] ? 1 : 0;
           n++;
         }
       }
-      tmp[y * cw + x] = sum / n;
+      out[y * cw + x] = sum / n;
     }
   }
-  return tmp;
 }
 
-/** Следующий контур = расширение предыдущего + лёгкое сглаживание (углы смягчаются). */
 export function expandMaskStep(
   prev: Uint8Array,
   cw: number,
@@ -156,29 +148,81 @@ export function expandMaskStep(
   radiusCells: number,
   smoothPasses: number,
   threshold: number,
+  bufA?: Uint8Array,
+  bufB?: Uint8Array,
 ): Uint8Array {
-  let cur = dilateDisk(prev, cw, ch, radiusCells);
+  const out = bufA ?? new Uint8Array(prev.length);
+  const tmp = bufB ?? new Uint8Array(prev.length);
+  dilateSeparable(prev, out, cw, ch, radiusCells);
+
+  let cur = out;
+  let next = tmp;
+  const blur = new Float32Array(prev.length);
 
   for (let p = 0; p < smoothPasses; p++) {
-    const blurred = boxBlurMask(cur, cw, ch);
-    const next = new Uint8Array(cur.length);
-    for (let i = 0; i < cur.length; i++) {
-      next[i] = blurred[i]! >= threshold ? 1 : 0;
-    }
+    boxBlurMask(cur, cw, ch, blur);
+    for (let i = 0; i < cur.length; i++) next[i] = blur[i]! >= threshold ? 1 : 0;
+    const swap = cur;
     cur = next;
+    next = swap;
   }
 
-  return cur;
+  return new Uint8Array(cur);
 }
 
-function strokeLoops(
+export type ContourChain = {
+  masks: Uint8Array[];
+  loops: Pt[][][];
+  cw: number;
+  ch: number;
+  cell: number;
+};
+
+export function buildContourChain(
+  glyphMask: Uint8Array,
+  cw: number,
+  ch: number,
+  cell: number,
+  count: number,
+  radiusCells: number,
+  smoothPasses: number,
+  threshold: number,
+  segBuf: Seg[],
+): ContourChain {
+  const n = Math.max(1, Math.min(150, Math.round(count)));
+  const masks: Uint8Array[] = [];
+  const loops: Pt[][][] = [];
+
+  const bufA = new Uint8Array(glyphMask.length);
+  const bufB = new Uint8Array(glyphMask.length);
+
+  let cur = new Uint8Array(glyphMask);
+  masks.push(cur);
+  loops.push(extractMaskLoops(cur, cw, ch, cell, segBuf));
+
+  for (let i = 1; i < n; i++) {
+    cur = expandMaskStep(cur, cw, ch, radiusCells, smoothPasses, threshold, bufA, bufB);
+    masks.push(cur);
+    loops.push(extractMaskLoops(cur, cw, ch, cell, segBuf));
+  }
+
+  return { masks, loops, cw, ch, cell };
+}
+
+/** Обводка + подложка цветом фона (перекрывает внутренние линии, без заливки всего экрана). */
+export function drawContourLoopsLayer(
   ctx: CanvasRenderingContext2D,
   loops: Pt[][],
-  stroke: string,
+  bgStroke: string | null,
+  fgStroke: string,
   lineWidth: number,
+  alpha: number,
 ) {
-  ctx.strokeStyle = stroke;
-  ctx.lineWidth = lineWidth;
+  if (loops.length === 0) return;
+
+  const pad = Math.max(1.25, lineWidth * 1.1);
+  ctx.save();
+  ctx.globalAlpha = alpha;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
 
@@ -188,64 +232,17 @@ function strokeLoops(
     ctx.moveTo(loop[0]!.x, loop[0]!.y);
     for (let i = 1; i < loop.length; i++) ctx.lineTo(loop[i]!.x, loop[i]!.y);
     ctx.closePath();
+
+    if (bgStroke) {
+      ctx.strokeStyle = bgStroke;
+      ctx.lineWidth = lineWidth + pad * 2;
+      ctx.stroke();
+    }
+
+    ctx.strokeStyle = fgStroke;
+    ctx.lineWidth = lineWidth;
     ctx.stroke();
   }
-}
 
-/**
- * Замкнутый контур: заливка всей области маски + обводка по границе.
- * Внешний слой перекрывает внутренние заливкой — видны только обводки.
- */
-export function drawMaskContourLayer(
-  ctx: CanvasRenderingContext2D,
-  mask: Uint8Array,
-  cw: number,
-  ch: number,
-  cell: number,
-  fill: string | null,
-  stroke: string,
-  lineWidth: number,
-  alpha: number,
-  segBuf: Seg[],
-) {
-  const pw = Math.ceil(cw * cell);
-  const ph = Math.ceil(ch * cell);
-
-  const off = document.createElement('canvas');
-  off.width = cw;
-  off.height = ch;
-  const octx = off.getContext('2d');
-  if (!octx) return;
-
-  const img = octx.createImageData(cw, ch);
-  for (let i = 0; i < mask.length; i++) {
-    if (!mask[i]) continue;
-    const p = i * 4;
-    img.data[p] = 255;
-    img.data[p + 1] = 255;
-    img.data[p + 2] = 255;
-    img.data[p + 3] = 255;
-  }
-  octx.putImageData(img, 0, 0);
-
-  ctx.save();
-  ctx.globalAlpha = alpha;
-
-  if (fill) {
-    ctx.fillStyle = fill;
-    ctx.fillRect(0, 0, pw, ph);
-    ctx.globalCompositeOperation = 'destination-in';
-    ctx.imageSmoothingEnabled = true;
-    ctx.drawImage(off, 0, 0, cw, ch, 0, 0, pw, ph);
-    ctx.globalCompositeOperation = 'source-over';
-  } else {
-    ctx.globalCompositeOperation = 'destination-out';
-    ctx.imageSmoothingEnabled = true;
-    ctx.drawImage(off, 0, 0, cw, ch, 0, 0, pw, ph);
-    ctx.globalCompositeOperation = 'source-over';
-  }
-
-  const loops = extractMaskLoops(mask, cw, ch, cell, segBuf);
-  strokeLoops(ctx, loops, stroke, lineWidth);
   ctx.restore();
 }

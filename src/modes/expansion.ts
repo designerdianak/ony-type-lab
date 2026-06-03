@@ -3,7 +3,11 @@ import type opentype from 'opentype.js';
 import { colorForGlyph } from '../utils/colors';
 import { clearNeutral } from '../utils/canvas';
 import { rasterizeGlyphMask, type GlyphSlot } from '../utils/contourField';
-import { drawMaskContourLayer, expandMaskStep } from '../utils/iterativeContours';
+import {
+  buildContourChain,
+  drawContourLoopsLayer,
+  type ContourChain,
+} from '../utils/iterativeContours';
 import { fillGlyphPath, strokeGlyphPath } from '../utils/opentypeCanvas';
 import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
 import { effectOpacity } from '../utils/visualAlpha';
@@ -23,17 +27,10 @@ export function createExpansionMode(
 ): ModeController {
   let lays: Lay[] = [];
   let layoutSig = '';
-  let maskSig = '';
+  let cacheSig = '';
   let tickerFn: (() => void) | null = null;
-  let t0 = 0;
 
-  let glyphMask: Uint8Array | null = null;
-  let cw = 0;
-  let ch = 0;
-  let cell = 2;
-
-  let advanceMask: Uint8Array | null = null;
-  let advanceRing = 0;
+  let chain: ContourChain | null = null;
 
   const segBuf: { x0: number; y0: number; x1: number; y1: number }[] = [];
 
@@ -52,27 +49,49 @@ export function createExpansionMode(
     lays = g.map((lg) => ({ char: lg.char, x: lg.x, bl: lg.baseline }));
   }
 
-  function rebuildMask(s: ModeSnapshot) {
+  function stepParams(s: ModeSnapshot, cell: number) {
+    const exp = s.visual.expansion;
+    const spacing = Math.max(3, exp.ringSpacing);
+    const radiusCells = Math.max(1, spacing / cell) * (0.65 + exp.offsetScale * 0.45);
+    const smoothPasses = Math.round(1 + exp.waveFlatten * 2);
+    const threshold = 0.42 - exp.waveFlatten * 0.12;
+    return { spacing, radiusCells, smoothPasses, threshold, count: exp.contourCount };
+  }
+
+  function rebuildChain(s: ModeSnapshot) {
     const { w, h } = readViewport();
     if (w < 32 || h < 32 || lays.length === 0) {
-      glyphMask = null;
-      advanceMask = null;
+      chain = null;
       return;
     }
 
     const exp = s.visual.expansion;
-    cell = Math.max(1.25, Math.min(2.75, exp.ringSpacing * 0.38));
-    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${w}|${h}|${cell}`;
-    if (sig === maskSig && glyphMask) return;
+    const count = Math.max(1, Math.min(150, Math.round(exp.contourCount)));
+    const cell = Math.max(
+      1.5,
+      Math.min(3.5, exp.ringSpacing * (0.32 + Math.min(count, 80) * 0.004)),
+    );
 
-    maskSig = sig;
+    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${w}|${h}|${cell}|${count}|${exp.ringSpacing}|${exp.offsetScale}|${exp.waveFlatten}`;
+    if (sig === cacheSig && chain) return;
+
+    cacheSig = sig;
     const slots: GlyphSlot[] = lays;
     const raster = rasterizeGlyphMask(w, h, cell, slots, s.fontCss, s.fontSize, s.opentypeFont);
-    glyphMask = raster.mask;
-    cw = raster.cw;
-    ch = raster.ch;
-    advanceMask = new Uint8Array(glyphMask);
-    advanceRing = 0;
+    const { radiusCells, smoothPasses, threshold } = stepParams(s, cell);
+
+    chain = buildContourChain(
+      raster.mask,
+      raster.cw,
+      raster.ch,
+      cell,
+      count,
+      radiusCells,
+      smoothPasses,
+      threshold,
+      segBuf,
+    );
+
   }
 
   function ensure() {
@@ -81,10 +100,10 @@ export function createExpansionMode(
     const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${w}|${h}`;
     if (sig !== layoutSig) {
       layoutSig = sig;
-      maskSig = '';
+      cacheSig = '';
       rebuild();
     }
-    rebuildMask(s);
+    rebuildChain(s);
   }
 
   function strokeColor(s: ModeSnapshot) {
@@ -99,45 +118,28 @@ export function createExpansionMode(
     });
   }
 
-  function stepParams(s: ModeSnapshot) {
-    const exp = s.visual.expansion;
-    const spacing = Math.max(3, exp.ringSpacing);
-    const radiusCells = Math.max(1, spacing / cell) * (0.65 + exp.offsetScale * 0.45);
-    const smoothPasses = Math.round(1 + exp.waveFlatten * 3);
-    const threshold = 0.42 - exp.waveFlatten * 0.12;
-    return { spacing, radiusCells, smoothPasses, threshold };
-  }
-
-  function advanceToRing(target: number, s: ModeSnapshot) {
-    if (!glyphMask || !advanceMask) return;
-    const { radiusCells, smoothPasses, threshold } = stepParams(s);
-
-    if (target < advanceRing) {
-      advanceMask = new Uint8Array(glyphMask);
-      advanceRing = 0;
-    }
-
-    while (advanceRing < target) {
-      advanceMask = expandMaskStep(advanceMask, cw, ch, radiusCells, smoothPasses, threshold);
-      advanceRing++;
-    }
-  }
-
   function drawLetterVector(
     s: ModeSnapshot,
     col: string,
     lw: number,
     alpha: number,
     font: opentype.Font,
-    fill: string | null,
+    bg: string | null,
   ) {
     const fs = s.fontSize;
+    const pad = Math.max(1.25, lw * 1.1);
+
     ctx.save();
     ctx.globalAlpha = alpha;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+
     for (const g of lays) {
       const path = font.getPath(g.char, g.x, g.bl, fs);
-      if (fill) fillGlyphPath(ctx, path, fill);
-      else {
+      if (bg) {
+        fillGlyphPath(ctx, path, bg);
+        strokeGlyphPath(ctx, path, bg, lw + pad * 2);
+      } else {
         ctx.globalCompositeOperation = 'destination-out';
         fillGlyphPath(ctx, path, 'rgba(0,0,0,1)');
         ctx.globalCompositeOperation = 'source-over';
@@ -154,36 +156,24 @@ export function createExpansionMode(
 
     ensure();
     clearNeutral(ctx, w, h, s.visual.stageBackground);
-    if (!glyphMask || !advanceMask || lays.length === 0) return;
+    if (!chain || lays.length === 0) return;
 
     const exp = s.visual.expansion;
     const alpha = effectOpacity(s.visual);
     const lw = Math.max(0.35, exp.strokeWidth);
     const col = strokeColor(s);
-    const fill = maskFillColor(s.visual.stageBackground);
-    const { spacing, radiusCells, smoothPasses, threshold } = stepParams(s);
-
-    const t = s.visual.animationEnabled && !s.visual.sceneFrozen ? (performance.now() - t0) * 0.001 : 0;
-    const ringPhase = t * (22 + exp.growSpeed * 10);
-    const baseRing = Math.floor(ringPhase);
-
-    const visibleRings = Math.min(72, Math.ceil(Math.max(w, h) / spacing) + 10);
-
-    advanceToRing(baseRing, s);
+    const bg = maskFillColor(s.visual.stageBackground);
+    const count = chain.loops.length;
 
     ctx.save();
     ctx.globalCompositeOperation = 'source-over';
 
-    let m = advanceMask;
-
-    for (let vi = 0; vi < visibleRings; vi++) {
-      if (baseRing === 0 && vi === 0 && s.opentypeFont) {
-        drawLetterVector(s, col, lw, alpha, s.opentypeFont, fill);
+    for (let idx = 0; idx < count; idx++) {
+      if (idx === 0 && s.opentypeFont) {
+        drawLetterVector(s, col, lw, alpha, s.opentypeFont, bg);
       } else {
-        drawMaskContourLayer(ctx, m, cw, ch, cell, fill, col, lw, alpha, segBuf);
+        drawContourLoopsLayer(ctx, chain.loops[idx]!, bg, col, lw, alpha);
       }
-
-      m = expandMaskStep(m, cw, ch, radiusCells, smoothPasses, threshold);
     }
 
     ctx.restore();
@@ -192,14 +182,11 @@ export function createExpansionMode(
   return {
     start() {
       layoutSig = '';
-      maskSig = '';
-      glyphMask = null;
-      advanceMask = null;
-      advanceRing = 0;
-      t0 = performance.now();
+      cacheSig = '';
+      chain = null;
       readViewport();
       rebuild();
-      rebuildMask(getSnap());
+      rebuildChain(getSnap());
       tickerFn = () => tick();
       gsap.ticker.add(tickerFn);
     },

@@ -306,6 +306,19 @@ export default function App() {
               onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, ringSpacing: v } }))}
             />
             <LabeledSlider
+              label="Количество контуров"
+              min={4}
+              max={150}
+              freeInput
+              value={visual.expansion.contourCount}
+              onChange={(v) =>
+                setVisual((s) => ({
+                  ...s,
+                  expansion: { ...s.expansion, contourCount: Math.round(v) },
+                }))
+              }
+            />
+            <LabeledSlider
               label="Толщина контура"
               min={0.2}
               max={8}
