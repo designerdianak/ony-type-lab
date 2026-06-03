@@ -2,12 +2,19 @@ import gsap from 'gsap';
 import type opentype from 'opentype.js';
 import { colorForGlyph } from '../utils/colors';
 import { clearNeutral } from '../utils/canvas';
+import {
+  chamferDistance,
+  drawContourSegments,
+  extractIsoContour,
+  rasterizeGlyphMask,
+  type GlyphSlot,
+} from '../utils/contourField';
 import { fillGlyphPath, strokeGlyphPath } from '../utils/opentypeCanvas';
 import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
 import { effectOpacity } from '../utils/visualAlpha';
 import type { ModeController, ModeSnapshot } from './types';
 
-type Lay = { char: string; x: number; y: number; w: number; h: number; bl: number };
+type Lay = { char: string; x: number; bl: number };
 
 function fontCssWithSize(fontCss: string, size: number): string {
   if (/\d+px/.test(fontCss)) return fontCss.replace(/\d+px/, `${size}px`);
@@ -19,32 +26,6 @@ function maskFillColor(stageBackground: string): string | null {
   return stageBackground;
 }
 
-function strokeHorizontalBand(
-  ctx: CanvasRenderingContext2D,
-  y: number,
-  w: number,
-  stroke: string,
-  lineWidth: number,
-  alpha: number,
-  dist: number,
-  fs: number,
-) {
-  const amp = fs * 0.06 * Math.min(1, dist / (fs * 3));
-  const freq = 0.012;
-  ctx.beginPath();
-  const step = Math.max(3, w / 120);
-  for (let x = 0; x <= w + step; x += step) {
-    const wy = y + Math.sin(x * freq + dist * 0.08) * amp;
-    if (x === 0) ctx.moveTo(x, wy);
-    else ctx.lineTo(x, wy);
-  }
-  ctx.globalAlpha = alpha;
-  ctx.strokeStyle = stroke;
-  ctx.lineWidth = lineWidth;
-  ctx.lineCap = 'round';
-  ctx.stroke();
-}
-
 export function createExpansionMode(
   _canvas: HTMLCanvasElement,
   ctx: CanvasRenderingContext2D,
@@ -52,9 +33,17 @@ export function createExpansionMode(
 ): ModeController {
   let lays: Lay[] = [];
   let layoutSig = '';
+  let fieldSig = '';
   let tickerFn: (() => void) | null = null;
   let t0 = 0;
-  let bounds = { top: 0, bottom: 0 };
+
+  let distField: Float32Array | null = null;
+  let gridCw = 0;
+  let gridCh = 0;
+  let gridCell = 2;
+  let maxDistCells = 0;
+
+  const segBuf: { x0: number; y0: number; x1: number; y1: number }[] = [];
 
   function rebuild() {
     const s = getSnap();
@@ -62,20 +51,36 @@ export function createExpansionMode(
     const ox = (s.w - tw) * 0.5;
     const oy = s.h * 0.55;
     const g = layoutGlyphs(ctx, s.text, s.fontCss, s.fontSize, s.letterSpacing, ox, oy);
-    lays = g.map((lg) => ({
-      char: lg.char,
-      x: lg.x,
-      y: lg.y,
-      w: lg.w,
-      h: lg.h,
-      bl: lg.baseline,
-    }));
-    if (lays.length > 0) {
-      bounds = {
-        top: Math.min(...lays.map((lg) => lg.bl - lg.h)),
-        bottom: Math.max(...lays.map((lg) => lg.bl + lg.h * 0.12)),
-      };
+    lays = g.map((lg) => ({ char: lg.char, x: lg.x, bl: lg.baseline }));
+  }
+
+  function ensureField(s: ModeSnapshot) {
+    const exp = s.visual.expansion;
+    const detail = exp.waveFlatten;
+    gridCell = Math.max(1.25, Math.min(3.5, exp.ringSpacing * (0.35 - detail * 0.12)));
+    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${s.w}|${s.h}|${gridCell}`;
+    if (sig === fieldSig && distField) return;
+
+    fieldSig = sig;
+    const slots: GlyphSlot[] = lays;
+    const { mask, cw, ch } = rasterizeGlyphMask(
+      s.w,
+      s.h,
+      gridCell,
+      slots,
+      s.fontCss,
+      s.fontSize,
+      s.opentypeFont,
+    );
+    gridCw = cw;
+    gridCh = ch;
+    distField = chamferDistance(mask, cw, ch);
+
+    let mx = 0;
+    for (let i = 0; i < distField.length; i++) {
+      if (distField[i]! < 1e6 && distField[i]! > mx) mx = distField[i]!;
     }
+    maxDistCells = mx;
   }
 
   function ensure() {
@@ -83,8 +88,10 @@ export function createExpansionMode(
     const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${s.w}|${s.h}`;
     if (sig !== layoutSig) {
       layoutSig = sig;
+      fieldSig = '';
       rebuild();
     }
+    ensureField(s);
   }
 
   function strokeColor(s: ModeSnapshot, index: number) {
@@ -99,70 +106,6 @@ export function createExpansionMode(
     });
   }
 
-  /** Контурные копии — только снаружи, без кольца на самой букве. */
-  function drawRippleRings(
-    s: ModeSnapshot,
-    col: string,
-    lw: number,
-    alpha: number,
-    font: opentype.Font | null,
-    scroll: number,
-    ringCount: number,
-    spacing: number,
-    maxR: number,
-    flattenStart: number,
-  ) {
-    const fs = s.fontSize;
-    const exp = s.visual.expansion;
-    const minDist = spacing * 1.05;
-
-    for (let ri = ringCount; ri >= 1; ri--) {
-      const dist = ri * spacing + (scroll % spacing);
-      if (dist < minDist || dist > maxR) continue;
-
-      const edgeFade = dist > maxR * 0.82 ? 1 - (dist - maxR * 0.82) / (maxR * 0.18) : 1;
-      const ringAlpha = alpha * Math.max(0.2, edgeFade);
-      const ringSize = fs + dist * (1.12 + exp.offsetScale * 0.32);
-
-      ctx.save();
-      ctx.globalAlpha = ringAlpha;
-      ctx.globalCompositeOperation = 'source-over';
-
-      if (font) {
-        for (const g of lays) {
-          const path = font.getPath(g.char, g.x, g.bl, ringSize);
-          strokeGlyphPath(ctx, path, col, lw);
-        }
-      } else {
-        ctx.font = fontCssWithSize(s.fontCss, ringSize);
-        ctx.textBaseline = 'alphabetic';
-        ctx.textAlign = 'left';
-        ctx.strokeStyle = col;
-        ctx.lineWidth = lw;
-        ctx.lineJoin = 'round';
-        ctx.lineCap = 'round';
-        for (const g of lays) ctx.strokeText(g.char, g.x, g.bl);
-      }
-      ctx.restore();
-
-      if (dist > flattenStart) {
-        const extra = dist - flattenStart;
-        const yBelow = bounds.bottom + extra * 0.92;
-        const yAbove = bounds.top - extra * 0.92;
-        if (yBelow < s.h + fs) {
-          strokeHorizontalBand(ctx, yBelow, s.w, col, lw, ringAlpha * 0.95, dist, fs);
-        }
-        if (yAbove > -fs) {
-          strokeHorizontalBand(ctx, yAbove, s.w, col, lw, ringAlpha * 0.95, dist, fs);
-        }
-      }
-    }
-  }
-
-  /**
-   * Верхний слой: заливка цветом фона (перекрывает линии внутри буквы) + контур.
-   * Как в референсе 36DaysOfType: читаемая буква, волны только снаружи.
-   */
   function drawForegroundLetter(
     s: ModeSnapshot,
     col: string,
@@ -172,7 +115,7 @@ export function createExpansionMode(
     maskFill: string | null,
   ) {
     const fs = s.fontSize;
-    const maskSize = fs + Math.max(4, lw * 3.2);
+    const pad = Math.max(3, lw * 2.5);
 
     ctx.save();
     ctx.globalCompositeOperation = 'source-over';
@@ -180,28 +123,24 @@ export function createExpansionMode(
 
     if (font) {
       for (const g of lays) {
-        const maskPath = font.getPath(g.char, g.x, g.bl, maskSize);
-        const letterPath = font.getPath(g.char, g.x, g.bl, fs);
-
+        const letter = font.getPath(g.char, g.x, g.bl, fs);
+        const mask = font.getPath(g.char, g.x, g.bl, fs + pad);
         if (maskFill) {
-          fillGlyphPath(ctx, maskPath, maskFill);
-          fillGlyphPath(ctx, maskPath, maskFill);
+          fillGlyphPath(ctx, mask, maskFill);
         } else {
           ctx.globalCompositeOperation = 'destination-out';
-          fillGlyphPath(ctx, maskPath, 'rgba(0,0,0,1)');
+          fillGlyphPath(ctx, mask, 'rgba(0,0,0,1)');
           ctx.globalCompositeOperation = 'source-over';
         }
-
-        strokeGlyphPath(ctx, letterPath, col, lw);
+        strokeGlyphPath(ctx, letter, col, lw);
       }
     } else {
       ctx.textBaseline = 'alphabetic';
       ctx.textAlign = 'left';
       for (const g of lays) {
-        ctx.font = fontCssWithSize(s.fontCss, maskSize);
+        ctx.font = fontCssWithSize(s.fontCss, fs + pad);
         if (maskFill) {
           ctx.fillStyle = maskFill;
-          ctx.fillText(g.char, g.x, g.bl);
           ctx.fillText(g.char, g.x, g.bl);
         } else {
           ctx.globalCompositeOperation = 'destination-out';
@@ -209,7 +148,6 @@ export function createExpansionMode(
           ctx.fillText(g.char, g.x, g.bl);
           ctx.globalCompositeOperation = 'source-over';
         }
-
         ctx.font = s.fontCss;
         ctx.strokeStyle = col;
         ctx.lineWidth = lw;
@@ -226,33 +164,46 @@ export function createExpansionMode(
     ensure();
     clearNeutral(ctx, s.w, s.h, s.visual.stageBackground);
 
+    if (!distField || lays.length === 0) return;
+
     const exp = s.visual.expansion;
     const alpha = effectOpacity(s.visual);
-    const fs = s.fontSize;
-    const spacing = Math.max(1.5, exp.ringSpacing);
+    const spacingCells = Math.max(1.2, exp.ringSpacing / gridCell) * (0.85 + exp.offsetScale * 0.2);
     const lw = Math.max(0.35, exp.strokeWidth);
-    const maxR = Math.max(s.w, s.h) * 0.95;
-    const ringCount = Math.ceil(maxR / spacing);
-    const speed = (0.35 + exp.growSpeed * 1.4) * spacing;
-    const t = s.visual.animationEnabled && !s.visual.sceneFrozen ? (performance.now() - t0) * 0.001 : 0;
-    const scroll = t * speed;
-    const font = s.opentypeFont;
     const col = strokeColor(s, 0);
-    const flattenStart = fs * (0.85 + exp.waveFlatten * 1.4);
     const maskFill = maskFillColor(s.visual.stageBackground);
 
-    if (lays.length === 0) return;
+    const maxR = maxDistCells + 4;
+    const ringCount = Math.ceil(maxR / spacingCells) + 2;
+    const speed = (0.25 + exp.growSpeed * 0.9) * spacingCells;
+    const t = s.visual.animationEnabled && !s.visual.sceneFrozen ? (performance.now() - t0) * 0.001 : 0;
+    const scroll = t * speed;
 
     ctx.save();
     ctx.globalCompositeOperation = 'source-over';
-    drawRippleRings(s, col, lw, alpha, font, scroll, ringCount, spacing, maxR, flattenStart);
-    drawForegroundLetter(s, col, lw, alpha, font, maskFill);
+
+    for (let ri = ringCount; ri >= 1; ri--) {
+      const iso = ri * spacingCells + (scroll % spacingCells);
+      if (iso < spacingCells * 0.85 || iso > maxR) continue;
+
+      const fade =
+        iso > maxR * 0.88 ? 1 - (iso - maxR * 0.88) / (maxR * 0.12 + 0.01) : 1;
+      const ringAlpha = alpha * Math.max(0.25, fade);
+
+      segBuf.length = 0;
+      extractIsoContour(distField, gridCw, gridCh, iso, gridCell, segBuf);
+      drawContourSegments(ctx, segBuf, col, lw, ringAlpha);
+    }
+
+    drawForegroundLetter(s, col, lw, alpha, s.opentypeFont, maskFill);
     ctx.restore();
   }
 
   return {
     start() {
       layoutSig = '';
+      fieldSig = '';
+      distField = null;
       t0 = performance.now();
       rebuild();
       tickerFn = () => tick();

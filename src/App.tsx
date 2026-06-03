@@ -25,7 +25,7 @@ const DEFAULT_WEIGHT =
 function modeHint(mode: LabModeId): string {
   switch (mode) {
     case 'expansion':
-      return 'Контурные волны от букв; растут к краям экрана';
+      return 'Изолинии вокруг букв (топографический контур); без пересечений';
     case 'colorStack':
       return 'Залитые копии со смещением — имитация объёма';
     case 'bloom':
@@ -335,7 +335,7 @@ export default function App() {
               onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, offsetScale: v } }))}
             />
             <LabeledSlider
-              label="Горизонт. полосы"
+              label="Детализация контуров"
               min={0}
               max={1}
               step={0.02}
