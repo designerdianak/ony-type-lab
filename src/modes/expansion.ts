@@ -3,11 +3,7 @@ import type opentype from 'opentype.js';
 import { colorForGlyph } from '../utils/colors';
 import { clearNeutral } from '../utils/canvas';
 import { rasterizeGlyphMask, type GlyphSlot } from '../utils/contourField';
-import {
-  buildContourChain,
-  drawContourLoopsLayer,
-  type ContourChain,
-} from '../utils/iterativeContours';
+import { buildContourChain, drawFilledContourLayer, type ContourChain } from '../utils/iterativeContours';
 import { fillGlyphPath, strokeGlyphPath } from '../utils/opentypeCanvas';
 import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
 import { effectOpacity } from '../utils/visualAlpha';
@@ -31,6 +27,7 @@ export function createExpansionMode(
   let tickerFn: (() => void) | null = null;
 
   let chain: ContourChain | null = null;
+  const fillScratch = document.createElement('canvas');
 
   const segBuf: { x0: number; y0: number; x1: number; y1: number }[] = [];
 
@@ -124,22 +121,15 @@ export function createExpansionMode(
     lw: number,
     alpha: number,
     font: opentype.Font,
-    bg: string | null,
+    fill: string | null,
   ) {
     const fs = s.fontSize;
-    const pad = Math.max(1.25, lw * 1.1);
-
     ctx.save();
     ctx.globalAlpha = alpha;
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
-
     for (const g of lays) {
       const path = font.getPath(g.char, g.x, g.bl, fs);
-      if (bg) {
-        fillGlyphPath(ctx, path, bg);
-        strokeGlyphPath(ctx, path, bg, lw + pad * 2);
-      } else {
+      if (fill) fillGlyphPath(ctx, path, fill);
+      else {
         ctx.globalCompositeOperation = 'destination-out';
         fillGlyphPath(ctx, path, 'rgba(0,0,0,1)');
         ctx.globalCompositeOperation = 'source-over';
@@ -172,7 +162,19 @@ export function createExpansionMode(
       if (idx === 0 && s.opentypeFont) {
         drawLetterVector(s, col, lw, alpha, s.opentypeFont, bg);
       } else {
-        drawContourLoopsLayer(ctx, chain.loops[idx]!, bg, col, lw, alpha);
+        drawFilledContourLayer(
+          ctx,
+          chain.loops[idx]!,
+          chain.masks[idx]!,
+          chain.cw,
+          chain.ch,
+          chain.cell,
+          bg,
+          col,
+          lw,
+          alpha,
+          fillScratch,
+        );
       }
     }
 

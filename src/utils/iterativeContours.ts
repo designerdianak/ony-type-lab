@@ -209,38 +209,101 @@ export function buildContourChain(
   return { masks, loops, cw, ch, cell };
 }
 
-/** Обводка + подложка цветом фона (перекрывает внутренние линии, без заливки всего экрана). */
-export function drawContourLoopsLayer(
-  ctx: CanvasRenderingContext2D,
-  loops: Pt[][],
-  bgStroke: string | null,
-  fgStroke: string,
-  lineWidth: number,
-  alpha: number,
-) {
-  if (loops.length === 0) return;
+function appendLoop(ctx: CanvasRenderingContext2D, loop: Pt[]) {
+  ctx.moveTo(loop[0]!.x, loop[0]!.y);
+  for (let i = 1; i < loop.length; i++) ctx.lineTo(loop[i]!.x, loop[i]!.y);
+  ctx.closePath();
+}
 
-  const pad = Math.max(1.25, lineWidth * 1.1);
+function ensureMaskScratch(
+  scratch: HTMLCanvasElement | null,
+  cw: number,
+  ch: number,
+): HTMLCanvasElement {
+  if (scratch && scratch.width === cw && scratch.height === ch) return scratch;
+  const c = scratch ?? document.createElement('canvas');
+  c.width = cw;
+  c.height = ch;
+  return c;
+}
+
+function paintMaskInterior(
+  ctx: CanvasRenderingContext2D,
+  mask: Uint8Array,
+  cw: number,
+  ch: number,
+  cell: number,
+  fill: string | null,
+  alpha: number,
+  scratch: HTMLCanvasElement,
+) {
+  const pw = Math.ceil(cw * cell);
+  const ph = Math.ceil(ch * cell);
+  const off = ensureMaskScratch(scratch, cw, ch);
+  const octx = off.getContext('2d');
+  if (!octx) return;
+
+  const img = octx.createImageData(cw, ch);
+  for (let i = 0; i < mask.length; i++) {
+    if (!mask[i]) continue;
+    const p = i * 4;
+    img.data[p] = 255;
+    img.data[p + 1] = 255;
+    img.data[p + 2] = 255;
+    img.data[p + 3] = 255;
+  }
+  octx.putImageData(img, 0, 0);
+
   ctx.save();
   ctx.globalAlpha = alpha;
+  if (fill) {
+    ctx.fillStyle = fill;
+    ctx.fillRect(0, 0, pw, ph);
+    ctx.globalCompositeOperation = 'destination-in';
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(off, 0, 0, cw, ch, 0, 0, pw, ph);
+    ctx.globalCompositeOperation = 'source-over';
+  } else {
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(off, 0, 0, cw, ch, 0, 0, pw, ph);
+    ctx.globalCompositeOperation = 'source-over';
+  }
+  ctx.restore();
+}
+
+/**
+ * Один контур по ТЗ: заливка фоном по области фигуры, затем обводка.
+ * Рисовать от центра к краям — внешние заливки перекрывают внутренние линии.
+ */
+export function drawFilledContourLayer(
+  ctx: CanvasRenderingContext2D,
+  loops: Pt[][],
+  mask: Uint8Array,
+  cw: number,
+  ch: number,
+  cell: number,
+  fill: string | null,
+  stroke: string,
+  lineWidth: number,
+  alpha: number,
+  scratch: HTMLCanvasElement,
+) {
+  paintMaskInterior(ctx, mask, cw, ch, cell, fill, alpha, scratch);
+
+  const valid = loops.filter((l) => l.length >= 3);
+  if (valid.length === 0) return;
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = lineWidth;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
 
-  for (const loop of loops) {
-    if (loop.length < 3) continue;
+  for (const loop of valid) {
     ctx.beginPath();
-    ctx.moveTo(loop[0]!.x, loop[0]!.y);
-    for (let i = 1; i < loop.length; i++) ctx.lineTo(loop[i]!.x, loop[i]!.y);
-    ctx.closePath();
-
-    if (bgStroke) {
-      ctx.strokeStyle = bgStroke;
-      ctx.lineWidth = lineWidth + pad * 2;
-      ctx.stroke();
-    }
-
-    ctx.strokeStyle = fgStroke;
-    ctx.lineWidth = lineWidth;
+    appendLoop(ctx, loop);
     ctx.stroke();
   }
 
