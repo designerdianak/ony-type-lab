@@ -1,7 +1,16 @@
-import { extractIsoContour } from './contourField';
+import { chamferDistance, extractIsoContour } from './contourField';
 
 type Seg = { x0: number; y0: number; x1: number; y1: number };
 export type Pt = { x: number; y: number };
+
+/** Параметры шага Shapeₙ = Smooth(Offset(Shapeₙ₋₁)). */
+export type ShapeStepParams = {
+  radiusCells: number;
+  baseSmoothPasses: number;
+  baseThreshold: number;
+  /** 0…1 — сильнее выпрямляет дальние контуры */
+  waveFlatten: number;
+};
 
 function ptKey(x: number, y: number): string {
   return `${Math.round(x * 4)},${Math.round(y * 4)}`;
@@ -91,45 +100,36 @@ export function extractMaskLoops(
   return stitchClosedLoops(segBuf);
 }
 
-/** Быстрое расширение: separable max-filter (приближение диска). */
-function dilateSeparable(src: Uint8Array, dst: Uint8Array, cw: number, ch: number, r: number) {
-  const rad = Math.max(1, Math.round(r));
-  const tmp = new Uint8Array(src.length);
-
-  for (let y = 0; y < ch; y++) {
-    for (let x = 0; x < cw; x++) {
-      let v = 0;
-      for (let dx = -rad; dx <= rad; dx++) {
-        const xx = x + dx;
-        if (xx < 0 || xx >= cw) continue;
-        if (src[y * cw + xx]) v = 1;
-      }
-      tmp[y * cw + x] = v;
-    }
-  }
-
-  for (let y = 0; y < ch; y++) {
-    for (let x = 0; x < cw; x++) {
-      let v = 0;
-      for (let dy = -rad; dy <= rad; dy++) {
-        const yy = y + dy;
-        if (yy < 0 || yy >= ch) continue;
-        if (tmp[yy * cw + x]) v = 1;
-      }
-      dst[y * cw + x] = v;
-    }
-  }
+/** Offset: расширение только предыдущей формы (не оригинала). */
+export function offsetMask(
+  prev: Uint8Array,
+  cw: number,
+  ch: number,
+  radiusCells: number,
+): Uint8Array {
+  const dist = chamferDistance(prev, cw, ch);
+  const r = Math.max(0.5, radiusCells);
+  const out = new Uint8Array(prev.length);
+  for (let i = 0; i < prev.length; i++) out[i] = dist[i]! <= r ? 1 : 0;
+  return out;
 }
 
-function boxBlurMask(mask: Uint8Array, cw: number, ch: number, out: Float32Array) {
+function boxBlurMask(
+  mask: Uint8Array,
+  cw: number,
+  ch: number,
+  kernel: number,
+  out: Float32Array,
+) {
+  const k = Math.max(1, Math.min(3, Math.round(kernel)));
   for (let y = 0; y < ch; y++) {
     for (let x = 0; x < cw; x++) {
       let sum = 0;
       let n = 0;
-      for (let dy = -1; dy <= 1; dy++) {
+      for (let dy = -k; dy <= k; dy++) {
         const yy = y + dy;
         if (yy < 0 || yy >= ch) continue;
-        for (let dx = -1; dx <= 1; dx++) {
+        for (let dx = -k; dx <= k; dx++) {
           const xx = x + dx;
           if (xx < 0 || xx >= cw) continue;
           sum += mask[yy * cw + xx] ? 1 : 0;
@@ -141,33 +141,54 @@ function boxBlurMask(mask: Uint8Array, cw: number, ch: number, out: Float32Array
   }
 }
 
-export function expandMaskStep(
-  prev: Uint8Array,
+/** Smooth: сглаживание текущей формы (после offset). */
+export function smoothMask(
+  mask: Uint8Array,
   cw: number,
   ch: number,
-  radiusCells: number,
-  smoothPasses: number,
+  passes: number,
   threshold: number,
+  kernel: number,
   bufA?: Uint8Array,
   bufB?: Uint8Array,
 ): Uint8Array {
-  const out = bufA ?? new Uint8Array(prev.length);
-  const tmp = bufB ?? new Uint8Array(prev.length);
-  dilateSeparable(prev, out, cw, ch, radiusCells);
+  const a = bufA ?? new Uint8Array(mask.length);
+  const b = bufB ?? new Uint8Array(mask.length);
+  const blur = new Float32Array(mask.length);
+  let cur: Uint8Array = mask;
+  let out = a;
 
-  let cur = out;
-  let next = tmp;
-  const blur = new Float32Array(prev.length);
-
-  for (let p = 0; p < smoothPasses; p++) {
-    boxBlurMask(cur, cw, ch, blur);
-    for (let i = 0; i < cur.length; i++) next[i] = blur[i]! >= threshold ? 1 : 0;
-    const swap = cur;
-    cur = next;
-    next = swap;
+  const nPass = Math.max(1, passes);
+  for (let p = 0; p < nPass; p++) {
+    boxBlurMask(cur, cw, ch, kernel, blur);
+    for (let i = 0; i < mask.length; i++) out[i] = blur[i]! >= threshold ? 1 : 0;
+    cur = out;
+    out = cur === a ? b : a;
   }
 
   return new Uint8Array(cur);
+}
+
+function smoothParamsForStep(stepIndex: number, p: ShapeStepParams) {
+  const passes = p.baseSmoothPasses + Math.floor(stepIndex * (0.1 + p.waveFlatten * 0.35));
+  const kernel = 1 + Math.min(3, Math.floor(stepIndex / 5));
+  const threshold = p.baseThreshold - Math.min(0.16, stepIndex * 0.004 * (0.6 + p.waveFlatten));
+  return { passes, kernel, threshold };
+}
+
+/** Shapeₙ = Smooth(Offset(Shapeₙ₋₁)); stepIndex = n. */
+export function expandShapeStep(
+  prev: Uint8Array,
+  cw: number,
+  ch: number,
+  stepIndex: number,
+  params: ShapeStepParams,
+  bufA?: Uint8Array,
+  bufB?: Uint8Array,
+): Uint8Array {
+  const offset = offsetMask(prev, cw, ch, params.radiusCells);
+  const sp = smoothParamsForStep(stepIndex, params);
+  return smoothMask(offset, cw, ch, sp.passes, sp.threshold, sp.kernel, bufA, bufB);
 }
 
 export type ContourChain = {
@@ -178,15 +199,17 @@ export type ContourChain = {
   cell: number;
 };
 
+/**
+ * Цепочка Shape0 → Shape1 → … ; каждый следующий только из предыдущего.
+ * Shape0 = растр исходного текста (один раз).
+ */
 export function buildContourChain(
   glyphMask: Uint8Array,
   cw: number,
   ch: number,
   cell: number,
   count: number,
-  radiusCells: number,
-  smoothPasses: number,
-  threshold: number,
+  params: ShapeStepParams,
   segBuf: Seg[],
 ): ContourChain {
   const n = Math.max(1, Math.min(150, Math.round(count)));
@@ -201,7 +224,7 @@ export function buildContourChain(
   loops.push(extractMaskLoops(cur, cw, ch, cell, segBuf));
 
   for (let i = 1; i < n; i++) {
-    cur = expandMaskStep(cur, cw, ch, radiusCells, smoothPasses, threshold, bufA, bufB);
+    cur = expandShapeStep(cur, cw, ch, i, params, bufA, bufB);
     masks.push(cur);
     loops.push(extractMaskLoops(cur, cw, ch, cell, segBuf));
   }
@@ -272,10 +295,7 @@ function paintMaskInterior(
   ctx.restore();
 }
 
-/**
- * Один контур по ТЗ: заливка фоном по области фигуры, затем обводка.
- * Рисовать от центра к краям — внешние заливки перекрывают внутренние линии.
- */
+/** Заливка фоном + обводка; рисовать Shape0 → Shape1 → … (внутрь → наружу). */
 export function drawFilledContourLayer(
   ctx: CanvasRenderingContext2D,
   loops: Pt[][],

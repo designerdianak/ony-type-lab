@@ -1,10 +1,13 @@
 import gsap from 'gsap';
-import type opentype from 'opentype.js';
 import { colorForGlyph } from '../utils/colors';
 import { clearNeutral } from '../utils/canvas';
 import { rasterizeGlyphMask, type GlyphSlot } from '../utils/contourField';
-import { buildContourChain, drawFilledContourLayer, type ContourChain } from '../utils/iterativeContours';
-import { fillGlyphPath, strokeGlyphPath } from '../utils/opentypeCanvas';
+import {
+  buildContourChain,
+  drawFilledContourLayer,
+  type ContourChain,
+  type ShapeStepParams,
+} from '../utils/iterativeContours';
 import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
 import { effectOpacity } from '../utils/visualAlpha';
 import type { ModeController, ModeSnapshot } from './types';
@@ -46,13 +49,15 @@ export function createExpansionMode(
     lays = g.map((lg) => ({ char: lg.char, x: lg.x, bl: lg.baseline }));
   }
 
-  function stepParams(s: ModeSnapshot, cell: number) {
+  function shapeParams(s: ModeSnapshot, cell: number): ShapeStepParams {
     const exp = s.visual.expansion;
     const spacing = Math.max(3, exp.ringSpacing);
-    const radiusCells = Math.max(1, spacing / cell) * (0.65 + exp.offsetScale * 0.45);
-    const smoothPasses = Math.round(1 + exp.waveFlatten * 2);
-    const threshold = 0.42 - exp.waveFlatten * 0.12;
-    return { spacing, radiusCells, smoothPasses, threshold, count: exp.contourCount };
+    return {
+      radiusCells: Math.max(0.75, spacing / cell) * (0.7 + exp.offsetScale * 0.4),
+      baseSmoothPasses: Math.round(1 + exp.waveFlatten * 2),
+      baseThreshold: 0.44 - exp.waveFlatten * 0.1,
+      waveFlatten: exp.waveFlatten,
+    };
   }
 
   function rebuildChain(s: ModeSnapshot) {
@@ -66,7 +71,7 @@ export function createExpansionMode(
     const count = Math.max(1, Math.min(150, Math.round(exp.contourCount)));
     const cell = Math.max(
       1.5,
-      Math.min(3.5, exp.ringSpacing * (0.32 + Math.min(count, 80) * 0.004)),
+      Math.min(3.25, exp.ringSpacing * (0.3 + Math.min(count, 80) * 0.004)),
     );
 
     const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${w}|${h}|${cell}|${count}|${exp.ringSpacing}|${exp.offsetScale}|${exp.waveFlatten}`;
@@ -75,7 +80,6 @@ export function createExpansionMode(
     cacheSig = sig;
     const slots: GlyphSlot[] = lays;
     const raster = rasterizeGlyphMask(w, h, cell, slots, s.fontCss, s.fontSize, s.opentypeFont);
-    const { radiusCells, smoothPasses, threshold } = stepParams(s, cell);
 
     chain = buildContourChain(
       raster.mask,
@@ -83,12 +87,9 @@ export function createExpansionMode(
       raster.ch,
       cell,
       count,
-      radiusCells,
-      smoothPasses,
-      threshold,
+      shapeParams(s, cell),
       segBuf,
     );
-
   }
 
   function ensure() {
@@ -115,30 +116,6 @@ export function createExpansionMode(
     });
   }
 
-  function drawLetterVector(
-    s: ModeSnapshot,
-    col: string,
-    lw: number,
-    alpha: number,
-    font: opentype.Font,
-    fill: string | null,
-  ) {
-    const fs = s.fontSize;
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    for (const g of lays) {
-      const path = font.getPath(g.char, g.x, g.bl, fs);
-      if (fill) fillGlyphPath(ctx, path, fill);
-      else {
-        ctx.globalCompositeOperation = 'destination-out';
-        fillGlyphPath(ctx, path, 'rgba(0,0,0,1)');
-        ctx.globalCompositeOperation = 'source-over';
-      }
-      strokeGlyphPath(ctx, path, col, lw);
-    }
-    ctx.restore();
-  }
-
   function tick() {
     const s = getSnap();
     const { w, h } = readViewport();
@@ -148,34 +125,30 @@ export function createExpansionMode(
     clearNeutral(ctx, w, h, s.visual.stageBackground);
     if (!chain || lays.length === 0) return;
 
-    const exp = s.visual.expansion;
     const alpha = effectOpacity(s.visual);
-    const lw = Math.max(0.35, exp.strokeWidth);
+    const lw = Math.max(0.35, s.visual.expansion.strokeWidth);
     const col = strokeColor(s);
     const bg = maskFillColor(s.visual.stageBackground);
-    const count = chain.loops.length;
+    const count = chain.masks.length;
 
     ctx.save();
     ctx.globalCompositeOperation = 'source-over';
 
+    // Shape0 → Shape1 → … : только цепочка, без копий оригинала
     for (let idx = 0; idx < count; idx++) {
-      if (idx === 0 && s.opentypeFont) {
-        drawLetterVector(s, col, lw, alpha, s.opentypeFont, bg);
-      } else {
-        drawFilledContourLayer(
-          ctx,
-          chain.loops[idx]!,
-          chain.masks[idx]!,
-          chain.cw,
-          chain.ch,
-          chain.cell,
-          bg,
-          col,
-          lw,
-          alpha,
-          fillScratch,
-        );
-      }
+      drawFilledContourLayer(
+        ctx,
+        chain.loops[idx]!,
+        chain.masks[idx]!,
+        chain.cw,
+        chain.ch,
+        chain.cell,
+        bg,
+        col,
+        lw,
+        alpha,
+        fillScratch,
+      );
     }
 
     ctx.restore();
