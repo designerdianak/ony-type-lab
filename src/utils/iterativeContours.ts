@@ -88,6 +88,31 @@ function maskToField(mask: Uint8Array): Float32Array {
   return field;
 }
 
+/** Граница маски по рёбрам сетки (надёжнее marching squares). */
+function collectBoundarySegments(
+  mask: Uint8Array,
+  cw: number,
+  ch: number,
+  cell: number,
+  out: Seg[],
+): void {
+  out.length = 0;
+  const inside = (gx: number, gy: number) =>
+    gx >= 0 && gx < cw && gy >= 0 && gy < ch && mask[gy * cw + gx] === 1;
+  const px = (gx: number) => gx * cell;
+  const py = (gy: number) => gy * cell;
+
+  for (let gy = 0; gy < ch; gy++) {
+    for (let gx = 0; gx < cw; gx++) {
+      if (!inside(gx, gy)) continue;
+      if (!inside(gx, gy - 1)) out.push({ x0: px(gx), y0: py(gy), x1: px(gx + 1), y1: py(gy) });
+      if (!inside(gx, gy + 1)) out.push({ x0: px(gx), y0: py(gy + 1), x1: px(gx + 1), y1: py(gy + 1) });
+      if (!inside(gx - 1, gy)) out.push({ x0: px(gx), y0: py(gy), x1: px(gx), y1: py(gy + 1) });
+      if (!inside(gx + 1, gy)) out.push({ x0: px(gx + 1), y0: py(gy), x1: px(gx + 1), y1: py(gy + 1) });
+    }
+  }
+}
+
 export function extractMaskLoops(
   mask: Uint8Array,
   cw: number,
@@ -95,9 +120,16 @@ export function extractMaskLoops(
   cell: number,
   segBuf: Seg[],
 ): Pt[][] {
-  segBuf.length = 0;
-  extractIsoContour(maskToField(mask), cw, ch, 0.5, cell, segBuf);
+  collectBoundarySegments(mask, cw, ch, cell, segBuf);
+  if (segBuf.length === 0) {
+    extractIsoContour(maskToField(mask), cw, ch, 0.5, cell, segBuf);
+  }
   return stitchClosedLoops(segBuf);
+}
+
+export function maskHasInk(mask: Uint8Array): boolean {
+  for (let i = 0; i < mask.length; i++) if (mask[i]) return true;
+  return false;
 }
 
 /** Offset: расширение только предыдущей формы (не оригинала). */
@@ -245,38 +277,79 @@ function appendLoop(ctx: CanvasRenderingContext2D, loop: Pt[]) {
   ctx.closePath();
 }
 
-/** Заливка фоном + обводка по контуру (без растра на весь экран). */
+function paintMaskFill(
+  ctx: CanvasRenderingContext2D,
+  mask: Uint8Array,
+  cw: number,
+  ch: number,
+  cell: number,
+  fill: string | null,
+  alpha: number,
+  scratch: HTMLCanvasElement,
+) {
+  const pw = Math.ceil(cw * cell);
+  const ph = Math.ceil(ch * cell);
+  if (scratch.width !== cw || scratch.height !== ch) {
+    scratch.width = cw;
+    scratch.height = ch;
+  }
+  const octx = scratch.getContext('2d');
+  if (!octx) return;
+
+  const img = octx.createImageData(cw, ch);
+  for (let i = 0; i < mask.length; i++) {
+    if (!mask[i]) continue;
+    const p = i * 4;
+    img.data[p] = 255;
+    img.data[p + 1] = 255;
+    img.data[p + 2] = 255;
+    img.data[p + 3] = 255;
+  }
+  octx.putImageData(img, 0, 0);
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(scratch, 0, 0, cw, ch, 0, 0, pw, ph);
+  if (fill) {
+    ctx.globalCompositeOperation = 'source-in';
+    ctx.fillStyle = fill;
+    ctx.fillRect(0, 0, pw, ph);
+  } else {
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fillStyle = 'rgba(0,0,0,1)';
+    ctx.fillRect(0, 0, pw, ph);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.restore();
+}
+
+/** Заливка фоном (маска) + обводка контура. */
 export function drawFilledContourLayer(
   ctx: CanvasRenderingContext2D,
   loops: Pt[][],
+  mask: Uint8Array,
+  cw: number,
+  ch: number,
+  cell: number,
   fill: string | null,
   stroke: string,
   lineWidth: number,
   alpha: number,
+  scratch: HTMLCanvasElement,
 ) {
+  paintMaskFill(ctx, mask, cw, ch, cell, fill, alpha, scratch);
+
   const valid = loops.filter((l) => l.length >= 3);
   if (valid.length === 0) return;
 
   ctx.save();
   ctx.globalAlpha = alpha;
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = lineWidth;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
 
-  ctx.beginPath();
-  for (const loop of valid) appendLoop(ctx, loop);
-
-  if (fill) {
-    ctx.fillStyle = fill;
-    ctx.fill('evenodd');
-  } else {
-    ctx.globalCompositeOperation = 'destination-out';
-    ctx.fillStyle = 'rgba(0,0,0,1)';
-    ctx.fill('evenodd');
-    ctx.globalCompositeOperation = 'source-over';
-  }
-
-  ctx.strokeStyle = stroke;
-  ctx.lineWidth = lineWidth;
   for (const loop of valid) {
     ctx.beginPath();
     appendLoop(ctx, loop);
