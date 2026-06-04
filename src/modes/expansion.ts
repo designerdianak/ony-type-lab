@@ -42,6 +42,8 @@ export function createExpansionMode(
   let chain: ContourChain | null = null;
   let chainReady = false;
   let buildGen = 0;
+  /** Сигнатура сборки в процессе — иначе tick перезапускал build каждый кадр. */
+  let buildingSig: string | null = null;
   const fillScratch = document.createElement('canvas');
 
   const segBuf: { x0: number; y0: number; x1: number; y1: number }[] = [];
@@ -89,8 +91,10 @@ export function createExpansionMode(
 
     const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${w}|${h}|${cell}|${count}|${exp.ringSpacing}|${exp.offsetScale}|${exp.waveFlatten}`;
     if (sig === cacheSig && chainReady && chain) return;
+    if (sig === buildingSig) return;
 
     cacheSig = sig;
+    buildingSig = sig;
     chainReady = false;
     buildGen++;
     const gen = buildGen;
@@ -142,6 +146,7 @@ export function createExpansionMode(
 
       if (step >= n) {
         chainReady = true;
+        buildingSig = null;
         return;
       }
 
@@ -216,6 +221,7 @@ export function createExpansionMode(
     start() {
       layoutSig = '';
       cacheSig = '';
+      buildingSig = null;
       chain = null;
       chainReady = false;
       buildGen++;
@@ -229,6 +235,7 @@ export function createExpansionMode(
       if (tickerFn) gsap.ticker.remove(tickerFn);
       tickerFn = null;
       buildGen++;
+      buildingSig = null;
     },
     dispose() {
       this.stop();

@@ -302,7 +302,7 @@ export default function App() {
               min={1}
               max={24}
               freeInput
-              value={visual.expansion.ringSpacing}
+              value={visual.expansion.ringSpacing ?? DEFAULT_PLAYGROUND_VISUAL.expansion.ringSpacing}
               onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, ringSpacing: v } }))}
             />
             <LabeledSlider
@@ -310,7 +310,7 @@ export default function App() {
               min={4}
               max={150}
               freeInput
-              value={visual.expansion.contourCount}
+              value={visual.expansion.contourCount ?? DEFAULT_PLAYGROUND_VISUAL.expansion.contourCount}
               onChange={(v) =>
                 setVisual((s) => ({
                   ...s,

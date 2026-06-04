@@ -170,9 +170,12 @@ export function smoothMask(
 }
 
 function smoothParamsForStep(stepIndex: number, p: ShapeStepParams) {
-  const passes = p.baseSmoothPasses + Math.floor(stepIndex * (0.1 + p.waveFlatten * 0.35));
-  const kernel = 1 + Math.min(3, Math.floor(stepIndex / 5));
-  const threshold = p.baseThreshold - Math.min(0.16, stepIndex * 0.004 * (0.6 + p.waveFlatten));
+  const passes = Math.min(
+    10,
+    p.baseSmoothPasses + Math.floor(stepIndex * (0.08 + p.waveFlatten * 0.22)),
+  );
+  const kernel = 1 + Math.min(3, Math.floor(stepIndex / 6));
+  const threshold = p.baseThreshold - Math.min(0.14, stepIndex * 0.003 * (0.5 + p.waveFlatten));
   return { passes, kernel, threshold };
 }
 
