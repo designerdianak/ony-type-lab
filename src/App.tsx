@@ -25,7 +25,7 @@ const DEFAULT_WEIGHT =
 function modeHint(mode: LabModeId): string {
   switch (mode) {
     case 'expansion':
-      return 'SDF-изолинии вокруг букв; вдали линии горизонтальные';
+      return 'Цепочка контуров: Offset + Smooth от предыдущей формы';
     case 'colorStack':
       return 'Залитые копии со смещением — имитация объёма';
     case 'bloom':

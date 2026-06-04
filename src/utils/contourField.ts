@@ -57,9 +57,14 @@ export function rasterizeGlyphMask(
 }
 
 /** Расстояние от каждой ячейки до ближайшего пикселя буквы (chamfer, в шагах сетки). */
-export function chamferDistance(mask: Uint8Array, cw: number, ch: number): Float32Array {
+export function chamferDistance(
+  mask: Uint8Array,
+  cw: number,
+  ch: number,
+  reuse?: Float32Array,
+): Float32Array {
   const n = cw * ch;
-  const d = new Float32Array(n);
+  const d = reuse && reuse.length === n ? reuse : new Float32Array(n);
   const INF = 1e7;
   for (let i = 0; i < n; i++) d[i] = mask[i] ? 0 : INF;
 

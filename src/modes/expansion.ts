@@ -3,8 +3,9 @@ import { colorForGlyph } from '../utils/colors';
 import { clearNeutral } from '../utils/canvas';
 import { rasterizeGlyphMask, type GlyphSlot } from '../utils/contourField';
 import {
-  buildContourChain,
   drawFilledContourLayer,
+  expandShapeStep,
+  extractMaskLoops,
   type ContourChain,
   type ShapeStepParams,
 } from '../utils/iterativeContours';
@@ -14,9 +15,18 @@ import type { ModeController, ModeSnapshot } from './types';
 
 type Lay = { char: string; x: number; bl: number };
 
+const STEPS_PER_FRAME = 6;
+const BUILD_BUDGET_MS = 14;
+
 function maskFillColor(stageBackground: string): string | null {
   if (stageBackground === 'transparent') return null;
   return stageBackground;
+}
+
+function contourCount(exp: ModeSnapshot['visual']['expansion']): number {
+  const n = Math.round(exp.contourCount);
+  if (!Number.isFinite(n) || n < 1) return 48;
+  return Math.min(150, n);
 }
 
 export function createExpansionMode(
@@ -30,6 +40,8 @@ export function createExpansionMode(
   let tickerFn: (() => void) | null = null;
 
   let chain: ContourChain | null = null;
+  let chainReady = false;
+  let buildGen = 0;
   const fillScratch = document.createElement('canvas');
 
   const segBuf: { x0: number; y0: number; x1: number; y1: number }[] = [];
@@ -60,36 +72,83 @@ export function createExpansionMode(
     };
   }
 
-  function rebuildChain(s: ModeSnapshot) {
+  function scheduleChainBuild(s: ModeSnapshot) {
     const { w, h } = readViewport();
     if (w < 32 || h < 32 || lays.length === 0) {
       chain = null;
+      chainReady = false;
       return;
     }
 
     const exp = s.visual.expansion;
-    const count = Math.max(1, Math.min(150, Math.round(exp.contourCount)));
+    const count = contourCount(exp);
     const cell = Math.max(
       1.5,
       Math.min(3.25, exp.ringSpacing * (0.3 + Math.min(count, 80) * 0.004)),
     );
 
     const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${w}|${h}|${cell}|${count}|${exp.ringSpacing}|${exp.offsetScale}|${exp.waveFlatten}`;
-    if (sig === cacheSig && chain) return;
+    if (sig === cacheSig && chainReady && chain) return;
 
     cacheSig = sig;
+    chainReady = false;
+    buildGen++;
+    const gen = buildGen;
+
     const slots: GlyphSlot[] = lays;
     const raster = rasterizeGlyphMask(w, h, cell, slots, s.fontCss, s.fontSize, s.opentypeFont);
+    const params = shapeParams(s, cell);
+    const n = count;
 
-    chain = buildContourChain(
-      raster.mask,
-      raster.cw,
-      raster.ch,
-      cell,
-      count,
-      shapeParams(s, cell),
-      segBuf,
-    );
+    const masks: Uint8Array[] = [new Uint8Array(raster.mask)];
+    const loops = [extractMaskLoops(masks[0]!, raster.cw, raster.ch, cell, segBuf)];
+
+    chain = { masks, loops, cw: raster.cw, ch: raster.ch, cell };
+
+    const distBuf = new Float32Array(raster.mask.length);
+    const offsetBuf = new Uint8Array(raster.mask.length);
+    const smoothA = new Uint8Array(raster.mask.length);
+    const smoothB = new Uint8Array(raster.mask.length);
+
+    let cur = masks[0]!;
+    let step = 1;
+
+    const runBatch = () => {
+      if (gen !== buildGen) return;
+      const t0 = performance.now();
+
+      while (step < n && performance.now() - t0 < BUILD_BUDGET_MS) {
+        let done = 0;
+        while (step < n && done < STEPS_PER_FRAME && performance.now() - t0 < BUILD_BUDGET_MS) {
+          cur = expandShapeStep(
+            cur,
+            raster.cw,
+            raster.ch,
+            step,
+            params,
+            distBuf,
+            offsetBuf,
+            smoothA,
+            smoothB,
+          );
+          masks.push(new Uint8Array(cur));
+          loops.push(extractMaskLoops(cur, raster.cw, raster.ch, cell, segBuf));
+          step++;
+          done++;
+        }
+      }
+
+      if (gen !== buildGen) return;
+
+      if (step >= n) {
+        chainReady = true;
+        return;
+      }
+
+      requestAnimationFrame(runBatch);
+    };
+
+    requestAnimationFrame(runBatch);
   }
 
   function ensure() {
@@ -101,7 +160,7 @@ export function createExpansionMode(
       cacheSig = '';
       rebuild();
     }
-    rebuildChain(s);
+    scheduleChainBuild(s);
   }
 
   function strokeColor(s: ModeSnapshot) {
@@ -123,22 +182,21 @@ export function createExpansionMode(
 
     ensure();
     clearNeutral(ctx, w, h, s.visual.stageBackground);
-    if (!chain || lays.length === 0) return;
+    if (!chain || lays.length === 0 || chain.masks.length === 0) return;
 
     const alpha = effectOpacity(s.visual);
     const lw = Math.max(0.35, s.visual.expansion.strokeWidth);
     const col = strokeColor(s);
     const bg = maskFillColor(s.visual.stageBackground);
-    const count = chain.masks.length;
+    const layers = chain.masks.length;
 
     ctx.save();
     ctx.globalCompositeOperation = 'source-over';
 
-    // Shape0 → Shape1 → … : только цепочка, без копий оригинала
-    for (let idx = 0; idx < count; idx++) {
+    for (let idx = 0; idx < layers; idx++) {
       drawFilledContourLayer(
         ctx,
-        chain.loops[idx]!,
+        chain.loops[idx] ?? [],
         chain.masks[idx]!,
         chain.cw,
         chain.ch,
@@ -159,15 +217,18 @@ export function createExpansionMode(
       layoutSig = '';
       cacheSig = '';
       chain = null;
+      chainReady = false;
+      buildGen++;
       readViewport();
       rebuild();
-      rebuildChain(getSnap());
+      scheduleChainBuild(getSnap());
       tickerFn = () => tick();
       gsap.ticker.add(tickerFn);
     },
     stop() {
       if (tickerFn) gsap.ticker.remove(tickerFn);
       tickerFn = null;
+      buildGen++;
     },
     dispose() {
       this.stop();

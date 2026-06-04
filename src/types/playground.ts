@@ -149,7 +149,7 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
   forceUppercase: false,
   expansion: {
     ringSpacing: 6,
-    contourCount: 100,
+    contourCount: 48,
     strokeWidth: 1,
     growSpeed: 0.28,
     strokeColor: 'auto',

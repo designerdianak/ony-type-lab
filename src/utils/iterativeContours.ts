@@ -101,17 +101,17 @@ export function extractMaskLoops(
 }
 
 /** Offset: расширение только предыдущей формы (не оригинала). */
-export function offsetMask(
+export function offsetMaskInto(
   prev: Uint8Array,
+  out: Uint8Array,
   cw: number,
   ch: number,
   radiusCells: number,
-): Uint8Array {
-  const dist = chamferDistance(prev, cw, ch);
+  distBuf: Float32Array,
+) {
+  const dist = chamferDistance(prev, cw, ch, distBuf);
   const r = Math.max(0.5, radiusCells);
-  const out = new Uint8Array(prev.length);
   for (let i = 0; i < prev.length; i++) out[i] = dist[i]! <= r ? 1 : 0;
-  return out;
 }
 
 function boxBlurMask(
@@ -183,12 +183,14 @@ export function expandShapeStep(
   ch: number,
   stepIndex: number,
   params: ShapeStepParams,
-  bufA?: Uint8Array,
-  bufB?: Uint8Array,
+  distBuf: Float32Array,
+  offsetBuf: Uint8Array,
+  smoothA: Uint8Array,
+  smoothB: Uint8Array,
 ): Uint8Array {
-  const offset = offsetMask(prev, cw, ch, params.radiusCells);
+  offsetMaskInto(prev, offsetBuf, cw, ch, params.radiusCells, distBuf);
   const sp = smoothParamsForStep(stepIndex, params);
-  return smoothMask(offset, cw, ch, sp.passes, sp.threshold, sp.kernel, bufA, bufB);
+  return smoothMask(offsetBuf, cw, ch, sp.passes, sp.threshold, sp.kernel, smoothA, smoothB);
 }
 
 export type ContourChain = {
@@ -216,16 +218,18 @@ export function buildContourChain(
   const masks: Uint8Array[] = [];
   const loops: Pt[][][] = [];
 
-  const bufA = new Uint8Array(glyphMask.length);
-  const bufB = new Uint8Array(glyphMask.length);
+  const distBuf = new Float32Array(glyphMask.length);
+  const offsetBuf = new Uint8Array(glyphMask.length);
+  const smoothA = new Uint8Array(glyphMask.length);
+  const smoothB = new Uint8Array(glyphMask.length);
 
   let cur = new Uint8Array(glyphMask);
   masks.push(cur);
   loops.push(extractMaskLoops(cur, cw, ch, cell, segBuf));
 
   for (let i = 1; i < n; i++) {
-    cur = expandShapeStep(cur, cw, ch, i, params, bufA, bufB);
-    masks.push(cur);
+    cur = expandShapeStep(cur, cw, ch, i, params, distBuf, offsetBuf, smoothA, smoothB);
+    masks.push(new Uint8Array(cur));
     loops.push(extractMaskLoops(cur, cw, ch, cell, segBuf));
   }
 
@@ -279,19 +283,18 @@ function paintMaskInterior(
 
   ctx.save();
   ctx.globalAlpha = alpha;
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(off, 0, 0, cw, ch, 0, 0, pw, ph);
   if (fill) {
+    ctx.globalCompositeOperation = 'source-in';
     ctx.fillStyle = fill;
     ctx.fillRect(0, 0, pw, ph);
-    ctx.globalCompositeOperation = 'destination-in';
-    ctx.imageSmoothingEnabled = true;
-    ctx.drawImage(off, 0, 0, cw, ch, 0, 0, pw, ph);
-    ctx.globalCompositeOperation = 'source-over';
   } else {
     ctx.globalCompositeOperation = 'destination-out';
-    ctx.imageSmoothingEnabled = true;
-    ctx.drawImage(off, 0, 0, cw, ch, 0, 0, pw, ph);
-    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = 'rgba(0,0,0,1)';
+    ctx.fillRect(0, 0, pw, ph);
   }
+  ctx.globalCompositeOperation = 'source-over';
   ctx.restore();
 }
 
