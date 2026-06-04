@@ -25,7 +25,7 @@ const DEFAULT_WEIGHT =
 function modeHint(mode: LabModeId): string {
   switch (mode) {
     case 'expansion':
-      return 'Цепочка контуров: Offset + Smooth от предыдущей формы';
+      return 'Копии = число волн; расстояние = шаг Offset. Чёрный фон + светлый контур как в референсе';
     case 'colorStack':
       return 'Залитые копии со смещением — имитация объёма';
     case 'bloom':
@@ -294,7 +294,21 @@ export default function App() {
         <div className="lab__section-title">Режим</div>
         <div className="lab__row">
           {LAB_MODES.map((m) => (
-            <RoundButton key={m.id} active={mode === m.id} onClick={() => setMode(m.id)}>
+            <RoundButton
+              key={m.id}
+              active={mode === m.id}
+              onClick={() => {
+                setMode(m.id);
+                if (m.id === 'expansion') {
+                  setVisual((v) => ({
+                    ...v,
+                    colorMode: 'monochrome',
+                    stageBackground: '#000000',
+                    monochromeColor: '#ffffff',
+                  }));
+                }
+              }}
+            >
               {m.shortLabel}
             </RoundButton>
           ))}
@@ -302,18 +316,11 @@ export default function App() {
 
         {mode === 'expansion' && (
           <>
+            <div className="lab__section-title">Ripple</div>
             <LabeledSlider
-              label="Шаг волн"
-              min={1}
-              max={24}
-              freeInput
-              value={expansion.ringSpacing}
-              onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, ringSpacing: v } }))}
-            />
-            <LabeledSlider
-              label="Количество контуров"
+              label="Копии"
               min={4}
-              max={80}
+              max={120}
               freeInput
               value={expansion.contourCount}
               onChange={(v) =>
@@ -324,9 +331,17 @@ export default function App() {
               }
             />
             <LabeledSlider
-              label="Толщина контура"
+              label="Расстояние"
+              min={1}
+              max={32}
+              freeInput
+              value={expansion.ringSpacing}
+              onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, ringSpacing: v } }))}
+            />
+            <LabeledSlider
+              label="Толщина линии"
               min={0.2}
-              max={8}
+              max={4}
               step={0.1}
               freeInput
               value={expansion.strokeWidth}
@@ -335,25 +350,15 @@ export default function App() {
             <LabeledSlider
               label="Скорость роста"
               min={0}
-              max={2}
-              step={0.02}
+              max={3}
+              step={0.05}
               freeInput
               value={expansion.growSpeed}
               format={(n) => n.toFixed(2)}
               onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, growSpeed: v } }))}
             />
             <LabeledSlider
-              label="Шаг расширения"
-              min={0.2}
-              max={3}
-              step={0.05}
-              freeInput
-              value={expansion.offsetScale}
-              format={(n) => n.toFixed(2)}
-              onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, offsetScale: v } }))}
-            />
-            <LabeledSlider
-              label="Сглаживание"
+              label="Сглаживание волн"
               min={0}
               max={1}
               step={0.02}

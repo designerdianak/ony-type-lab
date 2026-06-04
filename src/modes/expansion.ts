@@ -3,9 +3,9 @@ import type opentype from 'opentype.js';
 import { DEFAULT_PLAYGROUND_VISUAL } from '../types/playground';
 import { colorForGlyph } from '../utils/colors';
 import { clearNeutral } from '../utils/canvas';
-import { rasterizeGlyphMask, type GlyphSlot } from '../utils/contourField';
+import { rasterizeGlyphMask } from '../utils/contourField';
 import {
-  drawFilledContourLayer,
+  drawRippleRingLayer,
   expandShapeStep,
   extractMaskLoops,
   maskHasInk,
@@ -19,8 +19,8 @@ import type { ModeController, ModeSnapshot } from './types';
 
 type Lay = { char: string; x: number; bl: number };
 
-const STEPS_PER_FRAME = 5;
-const BUILD_BUDGET_MS = 14;
+const STEPS_PER_FRAME = 8;
+const BUILD_BUDGET_MS = 16;
 
 function safeExpansion(s: ModeSnapshot) {
   return { ...DEFAULT_PLAYGROUND_VISUAL.expansion, ...s.visual.expansion };
@@ -33,16 +33,16 @@ function maskFillColor(stageBackground: string): string | null {
 
 function contourCount(exp: ReturnType<typeof safeExpansion>): number {
   const n = Math.round(exp.contourCount);
-  if (!Number.isFinite(n) || n < 1) return 32;
-  return Math.min(80, n);
+  if (!Number.isFinite(n) || n < 2) return 24;
+  return Math.min(120, n);
 }
 
-function gridCell(exp: ReturnType<typeof safeExpansion>, w: number, h: number) {
-  const spacing = Math.max(3, exp.ringSpacing ?? 6);
-  let cell = Math.max(1.25, Math.min(3, spacing * 0.22));
+function gridCell(ringSpacing: number, w: number, h: number) {
+  const spacing = Math.max(2, ringSpacing);
+  let cell = Math.max(1, Math.min(2.5, spacing * 0.2));
   const cw = Math.ceil(w / cell);
   const ch = Math.ceil(h / cell);
-  const maxCells = 320_000;
+  const maxCells = 400_000;
   if (cw * ch > maxCells) cell = Math.sqrt((w * h) / maxCells);
   return cell;
 }
@@ -88,12 +88,13 @@ export function createExpansionMode(
   }
 
   function shapeParams(exp: ReturnType<typeof safeExpansion>, cell: number): ShapeStepParams {
-    const spacing = Math.max(3, exp.ringSpacing ?? 6);
+    const spacing = Math.max(2, exp.ringSpacing ?? 5);
+    const scale = Math.max(0.35, Math.min(2.5, exp.offsetScale ?? 1));
     return {
-      radiusCells: Math.max(0.6, spacing / cell) * (0.65 + (exp.offsetScale ?? 1) * 0.38),
-      baseSmoothPasses: Math.round(1 + (exp.waveFlatten ?? 0.5) * 2),
-      baseThreshold: 0.4 - (exp.waveFlatten ?? 0.5) * 0.08,
-      waveFlatten: exp.waveFlatten ?? 0.5,
+      radiusCells: Math.max(0.45, (spacing / cell) * scale),
+      baseSmoothPasses: Math.round(1 + (exp.waveFlatten ?? 0.45) * 2),
+      baseThreshold: 0.42 - (exp.waveFlatten ?? 0.45) * 0.1,
+      waveFlatten: exp.waveFlatten ?? 0.45,
     };
   }
 
@@ -108,7 +109,7 @@ export function createExpansionMode(
 
     const exp = safeExpansion(s);
     const count = contourCount(exp);
-    const cell = gridCell(exp, w, h);
+    const cell = gridCell(exp.ringSpacing ?? 5, w, h);
 
     const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${w}|${h}|${cell}|${count}|${exp.ringSpacing}|${exp.offsetScale}|${exp.waveFlatten}`;
     if (sig === cacheSig && chainReady && chain) return;
@@ -121,8 +122,7 @@ export function createExpansionMode(
     const gen = buildGen;
 
     try {
-      const slots: GlyphSlot[] = lays;
-      const raster = rasterizeGlyphMask(w, h, cell, slots, s.fontCss, s.fontSize, s.opentypeFont);
+      const raster = rasterizeGlyphMask(w, h, cell, lays, s.fontCss, s.fontSize, s.opentypeFont);
       if (!maskHasInk(raster.mask)) {
         cacheSig = '';
         chain = null;
@@ -253,57 +253,62 @@ export function createExpansionMode(
       scheduleChainBuild(s);
       clearNeutral(ctx, w, h, s.visual.stageBackground);
 
-      if (!chain || lays.length === 0 || chain.masks.length === 0) return;
+      if (!chain || lays.length === 0 || chain.masks.length < 2) return;
 
       const exp = safeExpansion(s);
       const alpha = effectOpacity(s.visual);
-      const lw = Math.max(0.5, exp.strokeWidth ?? 1);
+      const lw = Math.max(0.35, exp.strokeWidth ?? 1);
       const col = strokeColor(s);
       const bg = maskFillColor(s.visual.stageBackground);
       const layers = chain.masks.length;
+      const anim = s.animationEnabled && !s.visual.sceneFrozen;
 
       const growKey = cacheSig;
       if (growKey !== growSig) {
         growSig = growKey;
-        growPhase = 0;
+        growPhase = anim ? 1 : layers;
       }
-      if (s.animationEnabled && chainReady) {
-        growPhase = Math.min(layers - 0.001, growPhase + (exp.growSpeed ?? 0.28));
-      } else {
+      if (anim && chainReady) {
+        growPhase = Math.min(layers, growPhase + (exp.growSpeed ?? 0.35));
+      } else if (!anim) {
         growPhase = layers;
+      } else {
+        growPhase = Math.max(growPhase, chain.masks.length);
       }
+
       const visibleLayers = Math.min(
         layers,
-        Math.max(1, chainReady ? Math.floor(growPhase) + 1 : layers),
+        Math.max(2, anim && chainReady ? Math.ceil(growPhase) : chain.masks.length),
       );
 
       ctx.save();
       ctx.globalCompositeOperation = 'source-over';
 
-      for (let idx = 0; idx < visibleLayers; idx++) {
-        if (idx === 0 && s.opentypeFont) {
-          drawLetterVector(s, col, lw, alpha, s.opentypeFont, bg);
-        } else if (idx === 0) {
-          drawFilledContourLayer(
-            ctx,
-            chain.loops[0] ?? [],
-            chain.masks[0]!,
-            chain.cw,
-            chain.ch,
-            chain.cell,
-            bg,
-            col,
-            lw,
-            alpha,
-            fillScratch,
-          );
-          continue;
-        }
-        if (idx === 0) continue;
-        drawFilledContourLayer(
+      if (s.opentypeFont) {
+        drawLetterVector(s, col, lw, alpha, s.opentypeFont, bg);
+      } else {
+        drawRippleRingLayer(
           ctx,
-          chain.loops[idx] ?? [],
+          chain.masks[0]!,
+          null,
+          chain.loops[0] ?? [],
+          chain.cw,
+          chain.ch,
+          chain.cell,
+          bg,
+          col,
+          lw,
+          alpha,
+          fillScratch,
+        );
+      }
+
+      for (let idx = 1; idx < visibleLayers; idx++) {
+        drawRippleRingLayer(
+          ctx,
           chain.masks[idx]!,
+          chain.masks[idx - 1]!,
+          chain.loops[idx] ?? [],
           chain.cw,
           chain.ch,
           chain.cell,
@@ -328,6 +333,8 @@ export function createExpansionMode(
       buildingSig = null;
       chain = null;
       chainReady = false;
+      growPhase = 0;
+      growSig = '';
       buildGen++;
       rebuild();
       scheduleChainBuild(getSnap());

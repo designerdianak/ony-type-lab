@@ -202,12 +202,16 @@ export function smoothMask(
 }
 
 function smoothParamsForStep(stepIndex: number, p: ShapeStepParams) {
+  if (stepIndex <= 2) {
+    return { passes: 1, kernel: 1, threshold: 0.38 };
+  }
   const passes = Math.min(
     10,
-    p.baseSmoothPasses + Math.floor(stepIndex * (0.08 + p.waveFlatten * 0.22)),
+    p.baseSmoothPasses + Math.floor((stepIndex - 2) * (0.06 + p.waveFlatten * 0.2)),
   );
-  const kernel = 1 + Math.min(3, Math.floor(stepIndex / 6));
-  const threshold = p.baseThreshold - Math.min(0.14, stepIndex * 0.003 * (0.5 + p.waveFlatten));
+  const kernel = 1 + Math.min(3, Math.floor(stepIndex / 5));
+  const threshold =
+    p.baseThreshold - Math.min(0.12, (stepIndex - 2) * 0.004 * (0.4 + p.waveFlatten));
   return { passes, kernel, threshold };
 }
 
@@ -277,9 +281,10 @@ function appendLoop(ctx: CanvasRenderingContext2D, loop: Pt[]) {
   ctx.closePath();
 }
 
-function paintMaskFill(
+function paintMaskRegion(
   ctx: CanvasRenderingContext2D,
   mask: Uint8Array,
+  prevMask: Uint8Array | null,
   cw: number,
   ch: number,
   cell: number,
@@ -299,6 +304,7 @@ function paintMaskFill(
   const img = octx.createImageData(cw, ch);
   for (let i = 0; i < mask.length; i++) {
     if (!mask[i]) continue;
+    if (prevMask && prevMask[i]) continue;
     const p = i * 4;
     img.data[p] = 255;
     img.data[p + 1] = 255;
@@ -324,22 +330,13 @@ function paintMaskFill(
   ctx.restore();
 }
 
-/** Заливка фоном (маска) + обводка контура. */
-export function drawFilledContourLayer(
+function strokeContourLoops(
   ctx: CanvasRenderingContext2D,
   loops: Pt[][],
-  mask: Uint8Array,
-  cw: number,
-  ch: number,
-  cell: number,
-  fill: string | null,
   stroke: string,
   lineWidth: number,
   alpha: number,
-  scratch: HTMLCanvasElement,
 ) {
-  paintMaskFill(ctx, mask, cw, ch, cell, fill, alpha, scratch);
-
   const valid = loops.filter((l) => l.length >= 3);
   if (valid.length === 0) return;
 
@@ -357,4 +354,26 @@ export function drawFilledContourLayer(
   }
 
   ctx.restore();
+}
+
+/**
+ * Кольцо между предыдущей и текущей формой (заливка фоном) + обводка внешнего контура.
+ * Так все волны видны одновременно, как в референсе 36Days.
+ */
+export function drawRippleRingLayer(
+  ctx: CanvasRenderingContext2D,
+  mask: Uint8Array,
+  prevMask: Uint8Array | null,
+  loops: Pt[][],
+  cw: number,
+  ch: number,
+  cell: number,
+  fill: string | null,
+  stroke: string,
+  lineWidth: number,
+  alpha: number,
+  scratch: HTMLCanvasElement,
+) {
+  paintMaskRegion(ctx, mask, prevMask, cw, ch, cell, fill, alpha, scratch);
+  strokeContourLoops(ctx, loops, stroke, lineWidth, alpha);
 }
