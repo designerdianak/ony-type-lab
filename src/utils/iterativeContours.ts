@@ -245,88 +245,38 @@ function appendLoop(ctx: CanvasRenderingContext2D, loop: Pt[]) {
   ctx.closePath();
 }
 
-function ensureMaskScratch(
-  scratch: HTMLCanvasElement | null,
-  cw: number,
-  ch: number,
-): HTMLCanvasElement {
-  if (scratch && scratch.width === cw && scratch.height === ch) return scratch;
-  const c = scratch ?? document.createElement('canvas');
-  c.width = cw;
-  c.height = ch;
-  return c;
-}
-
-function paintMaskInterior(
-  ctx: CanvasRenderingContext2D,
-  mask: Uint8Array,
-  cw: number,
-  ch: number,
-  cell: number,
-  fill: string | null,
-  alpha: number,
-  scratch: HTMLCanvasElement,
-) {
-  const pw = Math.ceil(cw * cell);
-  const ph = Math.ceil(ch * cell);
-  const off = ensureMaskScratch(scratch, cw, ch);
-  const octx = off.getContext('2d');
-  if (!octx) return;
-
-  const img = octx.createImageData(cw, ch);
-  for (let i = 0; i < mask.length; i++) {
-    if (!mask[i]) continue;
-    const p = i * 4;
-    img.data[p] = 255;
-    img.data[p + 1] = 255;
-    img.data[p + 2] = 255;
-    img.data[p + 3] = 255;
-  }
-  octx.putImageData(img, 0, 0);
-
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.imageSmoothingEnabled = true;
-  ctx.drawImage(off, 0, 0, cw, ch, 0, 0, pw, ph);
-  if (fill) {
-    ctx.globalCompositeOperation = 'source-in';
-    ctx.fillStyle = fill;
-    ctx.fillRect(0, 0, pw, ph);
-  } else {
-    ctx.globalCompositeOperation = 'destination-out';
-    ctx.fillStyle = 'rgba(0,0,0,1)';
-    ctx.fillRect(0, 0, pw, ph);
-  }
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.restore();
-}
-
-/** Заливка фоном + обводка; рисовать Shape0 → Shape1 → … (внутрь → наружу). */
+/** Заливка фоном + обводка по контуру (без растра на весь экран). */
 export function drawFilledContourLayer(
   ctx: CanvasRenderingContext2D,
   loops: Pt[][],
-  mask: Uint8Array,
-  cw: number,
-  ch: number,
-  cell: number,
   fill: string | null,
   stroke: string,
   lineWidth: number,
   alpha: number,
-  scratch: HTMLCanvasElement,
 ) {
-  paintMaskInterior(ctx, mask, cw, ch, cell, fill, alpha, scratch);
-
   const valid = loops.filter((l) => l.length >= 3);
   if (valid.length === 0) return;
 
   ctx.save();
   ctx.globalAlpha = alpha;
-  ctx.strokeStyle = stroke;
-  ctx.lineWidth = lineWidth;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
 
+  ctx.beginPath();
+  for (const loop of valid) appendLoop(ctx, loop);
+
+  if (fill) {
+    ctx.fillStyle = fill;
+    ctx.fill('evenodd');
+  } else {
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fillStyle = 'rgba(0,0,0,1)';
+    ctx.fill('evenodd');
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = lineWidth;
   for (const loop of valid) {
     ctx.beginPath();
     appendLoop(ctx, loop);

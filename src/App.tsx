@@ -69,6 +69,11 @@ export default function App() {
     [family.cssFamily, weight.cssWeight, visual.fontSize],
   );
 
+  const expansion = useMemo(
+    () => ({ ...DEFAULT_PLAYGROUND_VISUAL.expansion, ...visual.expansion }),
+    [visual.expansion],
+  );
+
   const onCanvasReady = useCallback((el: HTMLCanvasElement) => {
     canvasElRef.current = el;
   }, []);
@@ -302,15 +307,15 @@ export default function App() {
               min={1}
               max={24}
               freeInput
-              value={visual.expansion.ringSpacing ?? DEFAULT_PLAYGROUND_VISUAL.expansion.ringSpacing}
+              value={expansion.ringSpacing}
               onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, ringSpacing: v } }))}
             />
             <LabeledSlider
               label="Количество контуров"
               min={4}
-              max={150}
+              max={80}
               freeInput
-              value={visual.expansion.contourCount ?? DEFAULT_PLAYGROUND_VISUAL.expansion.contourCount}
+              value={expansion.contourCount}
               onChange={(v) =>
                 setVisual((s) => ({
                   ...s,
@@ -324,7 +329,7 @@ export default function App() {
               max={8}
               step={0.1}
               freeInput
-              value={visual.expansion.strokeWidth}
+              value={expansion.strokeWidth}
               onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, strokeWidth: v } }))}
             />
             <LabeledSlider
@@ -333,7 +338,7 @@ export default function App() {
               max={2}
               step={0.02}
               freeInput
-              value={visual.expansion.growSpeed}
+              value={expansion.growSpeed}
               format={(n) => n.toFixed(2)}
               onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, growSpeed: v } }))}
             />
@@ -343,7 +348,7 @@ export default function App() {
               max={3}
               step={0.05}
               freeInput
-              value={visual.expansion.offsetScale}
+              value={expansion.offsetScale}
               format={(n) => n.toFixed(2)}
               onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, offsetScale: v } }))}
             />
@@ -352,7 +357,7 @@ export default function App() {
               min={0}
               max={1}
               step={0.02}
-              value={visual.expansion.waveFlatten}
+              value={expansion.waveFlatten}
               format={(n) => n.toFixed(2)}
               onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, waveFlatten: v } }))}
             />
@@ -361,11 +366,7 @@ export default function App() {
               <input
                 id="exp-stroke"
                 type="color"
-                value={
-                  visual.expansion.strokeColor === 'auto'
-                    ? visual.monochromeColor
-                    : visual.expansion.strokeColor
-                }
+                value={expansion.strokeColor === 'auto' ? visual.monochromeColor : expansion.strokeColor}
                 onChange={(e) =>
                   setVisual((s) => ({
                     ...s,
@@ -375,7 +376,7 @@ export default function App() {
               />
               <RoundToggle
                 label="Режим цвета"
-                pressed={visual.expansion.strokeColor === 'auto'}
+                pressed={expansion.strokeColor === 'auto'}
                 onChange={(on) =>
                   setVisual((s) => ({
                     ...s,
