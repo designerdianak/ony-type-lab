@@ -24,7 +24,7 @@ export function createGradientFlowMode(
 
   function tick() {
     const s = getSnap();
-    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${s.w}|${s.h}`;
+    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${s.lineHeight}|${s.w}|${s.h}`;
     if (sig !== layoutSig) layoutSig = sig;
 
     clearNeutral(ctx, s.w, s.h, s.visual.stageBackground);
@@ -40,6 +40,7 @@ export function createGradientFlowMode(
       s.letterSpacing,
       s.w,
       s.h,
+      s.lineHeight,
     );
     const lays = block.glyphs;
     const fs = block.effectiveFontSize;

@@ -11,6 +11,7 @@ export interface ModeSnapshot {
   fontUrl: string;
   fontSize: number;
   letterSpacing: number;
+  lineHeight: number;
   visual: PlaygroundVisualState;
   animationEnabled: boolean;
   opentypeFont: opentype.Font | null;

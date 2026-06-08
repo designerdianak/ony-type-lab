@@ -51,7 +51,12 @@ function textContainer(canvasW: number, canvasH: number): TextContainerRect {
   };
 }
 
-function fontMetrics(ctx: CanvasRenderingContext2D, fontCss: string, fontSize: number) {
+function fontMetrics(
+  ctx: CanvasRenderingContext2D,
+  fontCss: string,
+  fontSize: number,
+  lineHeightRatio = LINE_HEIGHT_RATIO,
+) {
   ctx.save();
   ctx.font = fontCss;
   ctx.textBaseline = 'alphabetic';
@@ -59,7 +64,7 @@ function fontMetrics(ctx: CanvasRenderingContext2D, fontCss: string, fontSize: n
   const ascent = m.actualBoundingBoxAscent > 0 ? m.actualBoundingBoxAscent : fontSize * 0.72;
   const descent = m.actualBoundingBoxDescent > 0 ? m.actualBoundingBoxDescent : fontSize * 0.22;
   ctx.restore();
-  return { ascent, descent, lineHeight: fontSize * LINE_HEIGHT_RATIO };
+  return { ascent, descent, lineHeight: fontSize * lineHeightRatio };
 }
 
 export function measureLineWidth(
@@ -145,8 +150,9 @@ function layoutLinesFromText(
   fontSize: number,
   letterSpacingPx: number,
   container: TextContainerRect,
+  lineHeightRatio = LINE_HEIGHT_RATIO,
 ): GlyphLayout[] {
-  const { ascent, descent, lineHeight } = fontMetrics(ctx, fontCss, fontSize);
+  const { ascent, descent, lineHeight } = fontMetrics(ctx, fontCss, fontSize, lineHeightRatio);
   const glyphH = ascent + descent;
   const blockH = lines.length * lineHeight;
   const blockTop = container.y + (container.h - blockH) * 0.5;
@@ -202,6 +208,7 @@ export function layoutTextInContainer(
   letterSpacingPx: number,
   canvasW: number,
   canvasH: number,
+  lineHeightRatio = LINE_HEIGHT_RATIO,
 ): TextBlockLayout {
   const container = textContainer(canvasW, canvasH);
   const clean = text.trim();
@@ -225,7 +232,7 @@ export function layoutTextInContainer(
     effectiveFontSize = Math.max(10, fontSize * scale);
     effectiveFontCss = fontCssAtSize(fontCss, effectiveFontSize);
     lines = wrapTextToLines(ctx, clean, effectiveFontCss, letterSpacingPx, container.w);
-    const { lineHeight } = fontMetrics(ctx, effectiveFontCss, effectiveFontSize);
+    const { lineHeight } = fontMetrics(ctx, effectiveFontCss, effectiveFontSize, lineHeightRatio);
     const blockH = lines.length * lineHeight;
     const tooMany = lines.length > MAX_LINES;
     const tooTall = blockH > container.h;
@@ -242,6 +249,7 @@ export function layoutTextInContainer(
     effectiveFontSize,
     letterSpacingPx,
     container,
+    lineHeightRatio,
   );
 
   return {
@@ -306,6 +314,16 @@ export function layoutTextForCanvas(
   letterSpacingPx: number,
   canvasW: number,
   canvasH: number,
+  lineHeightRatio = LINE_HEIGHT_RATIO,
 ): TextBlockLayout {
-  return layoutTextInContainer(ctx, text, fontCss, fontSize, letterSpacingPx, canvasW, canvasH);
+  return layoutTextInContainer(
+    ctx,
+    text,
+    fontCss,
+    fontSize,
+    letterSpacingPx,
+    canvasW,
+    canvasH,
+    lineHeightRatio,
+  );
 }

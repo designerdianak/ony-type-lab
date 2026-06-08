@@ -32,8 +32,12 @@ export const LAB_MODES: LabModeDefinition[] = [
 /** Равномерный шаг или falloff — дальше от текста, шире промежуток. */
 export type RippleDistribution = 'uniform' | 'falloff';
 
-/** Фон колец + один цвет обводки, или своя палитра обводок. */
-export type RipplePaletteMode = 'twoColors' | 'custom';
+/**
+ * contourFill — заливка фона колец + обводка контуров;
+ * alternatingFill — только заливки, 2 цвета чередуются;
+ * customFill — только заливки из кастомной палитры.
+ */
+export type RipplePaletteMode = 'contourFill' | 'alternatingFill' | 'customFill';
 
 /**
  * Ripple / Offset Path (Cavalry):
@@ -47,7 +51,7 @@ export interface ExpansionSettings {
   paletteMode: RipplePaletteMode;
   /** заливка колец (перекрывает предыдущие обводки) */
   fillColor: string;
-  /** обводка контуров (twoColors) */
+  /** обводка (contourFill) или второй цвет заливки (alternatingFill) */
   strokeColor: string;
   customPalette: string[];
   horizontalBias: number;
@@ -123,6 +127,8 @@ export interface PlaygroundVisualState {
   text: string;
   fontSize: number;
   letterSpacing: number;
+  /** Множитель межстрочного интервала (1 ≈ кегль + 14%) */
+  lineHeight: number;
   stageBackground: string;
   canvasClearNonce: number;
   multiplyBlend: boolean;
@@ -148,6 +154,7 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
   text: 'Play Type',
   fontSize: 72,
   letterSpacing: 0,
+  lineHeight: 1.14,
   stageBackground: '#fafaf9',
   canvasClearNonce: 0,
   multiplyBlend: false,
@@ -162,7 +169,7 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
     contourCount: 28,
     distribution: 'uniform',
     falloffStrength: 0.1,
-    paletteMode: 'twoColors',
+    paletteMode: 'contourFill',
     fillColor: '#fafaf9',
     strokeColor: '#0a0a0a',
     customPalette: ['#0a0a0a', '#e91e8c'],

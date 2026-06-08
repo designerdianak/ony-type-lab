@@ -95,7 +95,7 @@ export function createSoftBodyMode(
     const cfg = s.visual.softBody;
     const spacingBoost = cfg.overlap ? 0 : s.fontSize * 0.06;
     const letter = s.letterSpacing + spacingBoost;
-    const block = layoutTextForCanvas(ctx, s.text, s.fontCss, s.fontSize, letter, s.w, s.h);
+    const block = layoutTextForCanvas(ctx, s.text, s.fontCss, s.fontSize, letter, s.w, s.h, s.lineHeight);
     const lays = block.glyphs;
     layoutFontSize = block.effectiveFontSize;
     if (lays.length === 0) {
@@ -168,7 +168,7 @@ export function createSoftBodyMode(
   function ensure() {
     const s = getSnap();
     const cfg = s.visual.softBody;
-    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${s.w}|${s.h}|${cfg.overlap}|${cfg.vortexCopies}|${cfg.flowSpeed}|${cfg.drift}|${cfg.swirl}`;
+    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${s.lineHeight}|${s.w}|${s.h}|${cfg.overlap}|${cfg.vortexCopies}|${cfg.flowSpeed}|${cfg.drift}|${cfg.swirl}`;
     if (sig !== layoutSig) {
       layoutSig = sig;
       rebuild();

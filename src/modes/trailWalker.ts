@@ -30,6 +30,7 @@ export function createTrailWalkerMode(
       s.letterSpacing,
       s.w,
       s.h,
+      s.lineHeight,
     );
     x = block.container.x + block.container.w * 0.5;
     y = block.container.y + block.container.h * 0.5;
@@ -39,7 +40,7 @@ export function createTrailWalkerMode(
   }
 
   function ensure(s: ModeSnapshot) {
-    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${s.w}|${s.h}`;
+    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${s.lineHeight}|${s.w}|${s.h}`;
     if (sig !== layoutSig) {
       layoutSig = sig;
       reset(s);

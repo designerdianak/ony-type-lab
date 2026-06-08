@@ -64,6 +64,7 @@ export function createBloomPaintMode(
       s.letterSpacing,
       s.w,
       s.h,
+      s.lineHeight,
     );
     layoutFontSize = block.effectiveFontSize;
     layoutFontCss = block.effectiveFontCss;
@@ -85,7 +86,7 @@ export function createBloomPaintMode(
 
   function ensureLayout() {
     const s = getSnap();
-    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${s.w}|${s.h}`;
+    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${s.lineHeight}|${s.w}|${s.h}`;
     if (sig !== layoutSig) {
       layoutSig = sig;
       resetLayout();

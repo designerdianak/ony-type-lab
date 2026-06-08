@@ -119,6 +119,7 @@ export default function App() {
       visual.letterSpacing,
       w,
       h,
+      visual.lineHeight,
     );
     const layouts = block.glyphs;
     const fill =
@@ -211,6 +212,16 @@ export default function App() {
           freeInput
           value={visual.letterSpacing}
           onChange={(v) => setVisual((s) => ({ ...s, letterSpacing: v }))}
+        />
+        <LabeledSlider
+          label="Межстрочный"
+          min={0.6}
+          max={2.5}
+          step={0.02}
+          freeInput
+          value={visual.lineHeight}
+          format={(n) => n.toFixed(2)}
+          onChange={(v) => setVisual((s) => ({ ...s, lineHeight: v }))}
         />
         <LabeledSlider
           label="Непрозрачность эффекта"
@@ -326,17 +337,19 @@ export default function App() {
                 }))
               }
             />
-            <LabeledSlider
-              label="Толщина обводки"
-              min={0.35}
-              max={3}
-              step={0.1}
-              freeInput
-              value={expansion.strokeWidth}
-              onChange={(v) =>
-                setVisual((s) => ({ ...s, expansion: { ...s.expansion, strokeWidth: v } }))
-              }
-            />
+            {expansion.paletteMode === 'contourFill' && (
+              <LabeledSlider
+                label="Толщина обводки"
+                min={0.35}
+                max={3}
+                step={0.1}
+                freeInput
+                value={expansion.strokeWidth}
+                onChange={(v) =>
+                  setVisual((s) => ({ ...s, expansion: { ...s.expansion, strokeWidth: v } }))
+                }
+              />
+            )}
             <div className="lab__field">
               <span>Распределение</span>
               <div className="lab__row">
@@ -403,22 +416,33 @@ export default function App() {
               <span>Цвет</span>
               <div className="lab__row">
                 <RoundButton
-                  active={expansion.paletteMode === 'twoColors'}
+                  active={expansion.paletteMode === 'contourFill'}
                   onClick={() =>
                     setVisual((s) => ({
                       ...s,
-                      expansion: { ...s.expansion, paletteMode: 'twoColors' },
+                      expansion: { ...s.expansion, paletteMode: 'contourFill' },
                     }))
                   }
                 >
-                  Two Colors
+                  Контур + заливка
                 </RoundButton>
                 <RoundButton
-                  active={expansion.paletteMode === 'custom'}
+                  active={expansion.paletteMode === 'alternatingFill'}
                   onClick={() =>
                     setVisual((s) => ({
                       ...s,
-                      expansion: { ...s.expansion, paletteMode: 'custom' },
+                      expansion: { ...s.expansion, paletteMode: 'alternatingFill' },
+                    }))
+                  }
+                >
+                  2 цвета
+                </RoundButton>
+                <RoundButton
+                  active={expansion.paletteMode === 'customFill'}
+                  onClick={() =>
+                    setVisual((s) => ({
+                      ...s,
+                      expansion: { ...s.expansion, paletteMode: 'customFill' },
                     }))
                   }
                 >
@@ -426,7 +450,7 @@ export default function App() {
                 </RoundButton>
               </div>
             </div>
-            {expansion.paletteMode === 'twoColors' ? (
+            {expansion.paletteMode === 'contourFill' && (
               <>
                 <div className="lab__field lab__field--row">
                   <label htmlFor="exp-fill">Фон колец</label>
@@ -457,7 +481,40 @@ export default function App() {
                   />
                 </div>
               </>
-            ) : (
+            )}
+            {expansion.paletteMode === 'alternatingFill' && (
+              <>
+                <div className="lab__field lab__field--row">
+                  <label htmlFor="exp-alt-a">Цвет 1</label>
+                  <input
+                    id="exp-alt-a"
+                    type="color"
+                    value={expansion.fillColor}
+                    onChange={(e) =>
+                      setVisual((s) => ({
+                        ...s,
+                        expansion: { ...s.expansion, fillColor: e.target.value },
+                      }))
+                    }
+                  />
+                </div>
+                <div className="lab__field lab__field--row">
+                  <label htmlFor="exp-alt-b">Цвет 2</label>
+                  <input
+                    id="exp-alt-b"
+                    type="color"
+                    value={expansion.strokeColor}
+                    onChange={(e) =>
+                      setVisual((s) => ({
+                        ...s,
+                        expansion: { ...s.expansion, strokeColor: e.target.value },
+                      }))
+                    }
+                  />
+                </div>
+              </>
+            )}
+            {expansion.paletteMode === 'customFill' && (
               <>
                 {expansion.customPalette.map((c, i) => (
                   <div key={i} className="lab__field lab__field--row">
@@ -491,20 +548,6 @@ export default function App() {
                     </RoundButton>
                   </div>
                 ))}
-                <div className="lab__field lab__field--row">
-                  <label htmlFor="exp-fill-custom">Фон колец</label>
-                  <input
-                    id="exp-fill-custom"
-                    type="color"
-                    value={expansion.fillColor}
-                    onChange={(e) =>
-                      setVisual((s) => ({
-                        ...s,
-                        expansion: { ...s.expansion, fillColor: e.target.value },
-                      }))
-                    }
-                  />
-                </div>
                 <RoundButton
                   active={false}
                   onClick={() =>
@@ -930,6 +973,7 @@ export default function App() {
           fontReady={fontReady}
           fontSize={visual.fontSize}
           letterSpacing={visual.letterSpacing}
+          lineHeight={visual.lineHeight}
           visual={visual}
           animationEnabled={visual.animationEnabled}
           opentypeFont={opentypeFont}

@@ -51,6 +51,7 @@ export function createSymbolOverlayMode(
       s.letterSpacing,
       s.w,
       s.h,
+      s.lineHeight,
     );
     const allOn = s.visual.symbol.interaction === 'alwaysOn';
     glyphs = block.glyphs.map((g) => ({
@@ -66,7 +67,7 @@ export function createSymbolOverlayMode(
 
   function ensure() {
     const s = getSnap();
-    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${s.w}|${s.h}|${s.visual.symbol.interaction}`;
+    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${s.lineHeight}|${s.w}|${s.h}|${s.visual.symbol.interaction}`;
     if (sig !== layoutSig) {
       layoutSig = sig;
       rebuild();

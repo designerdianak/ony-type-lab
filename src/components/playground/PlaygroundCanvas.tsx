@@ -15,6 +15,7 @@ export type PlaygroundCanvasProps = {
   fontReady: boolean;
   fontSize: number;
   letterSpacing: number;
+  lineHeight: number;
   visual: PlaygroundVisualState;
   animationEnabled: boolean;
   opentypeFont: opentype.Font | null;
@@ -32,6 +33,7 @@ export function PlaygroundCanvas({
   fontReady,
   fontSize,
   letterSpacing,
+  lineHeight,
   visual,
   animationEnabled,
   opentypeFont,
@@ -51,6 +53,7 @@ export function PlaygroundCanvas({
     fontUrl,
     fontSize,
     letterSpacing,
+    lineHeight,
     visual,
     animationEnabled,
     opentypeFont,
@@ -65,6 +68,7 @@ export function PlaygroundCanvas({
     fontUrl,
     fontSize,
     letterSpacing,
+    lineHeight,
     visual,
     animationEnabled,
     opentypeFont,
@@ -126,6 +130,7 @@ export function PlaygroundCanvas({
         fontUrl: d.fontUrl,
         fontSize: d.fontSize,
         letterSpacing: d.letterSpacing,
+        lineHeight: d.lineHeight,
         visual: d.visual,
         animationEnabled: d.animationEnabled,
         opentypeFont: d.opentypeFont,

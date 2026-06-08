@@ -58,7 +58,7 @@ export function createAssemblyMode(
     const asm = s.visual.assembly;
     const spacingBoost = asm.overlap ? 0 : s.fontSize * 0.06;
     const letter = s.letterSpacing + spacingBoost;
-    const block = layoutTextForCanvas(ctx, s.text, s.fontCss, s.fontSize, letter, s.w, s.h);
+    const block = layoutTextForCanvas(ctx, s.text, s.fontCss, s.fontSize, letter, s.w, s.h, s.lineHeight);
     layoutFontSize = block.effectiveFontSize;
     systems = block.glyphs.map((g, i) => ({
       char: g.char,
@@ -72,7 +72,7 @@ export function createAssemblyMode(
   function ensure() {
     const s = getSnap();
     const asm = s.visual.assembly;
-    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${s.w}|${s.h}|${asm.overlap}`;
+    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${s.lineHeight}|${s.w}|${s.h}|${asm.overlap}`;
     if (sig !== layoutSig) {
       layoutSig = sig;
       rebuild();

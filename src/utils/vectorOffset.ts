@@ -140,6 +140,18 @@ function xyPolyToPath(poly: XY[]): Path {
   return out.length >= 3 ? out : [];
 }
 
+export function shapeMaxRadius(paths: Paths, center: { cx: number; cy: number }): number {
+  let maxR = 0;
+  for (const path of paths) {
+    for (const p of path) {
+      const x = p.x / CLIPPER_SCALE;
+      const y = p.y / CLIPPER_SCALE;
+      maxR = Math.max(maxR, Math.hypot(x - center.cx, y - center.cy));
+    }
+  }
+  return maxR;
+}
+
 export function pathsBoundsCenter(paths: Paths): { cx: number; cy: number } {
   let minX = Infinity;
   let minY = Infinity;
@@ -214,7 +226,7 @@ export function offsetPaths(
 
   const result = clipper.offsetToPaths({
     delta: deltaPx * CLIPPER_SCALE,
-    arcTolerance: 0.2 * CLIPPER_SCALE,
+    arcTolerance: 0.35 * CLIPPER_SCALE,
     offsetInputs: [
       {
         joinType: JoinType.Round,
@@ -230,7 +242,7 @@ export function offsetPaths(
   return scalePathsAbout(result, center.cx, center.cy, 1 / sx, 1 / sy);
 }
 
-function pathsToPath2D(paths: Paths): Path2D {
+export function pathsToPath2D(paths: Paths): Path2D {
   const p = new Path2D();
   for (const path of paths) {
     if (path.length < 2) continue;
@@ -245,6 +257,68 @@ function pathsToPath2D(paths: Paths): Path2D {
   return p;
 }
 
+function withGrowthTransform(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  growth: number,
+  draw: () => void,
+) {
+  ctx.save();
+  if (Math.abs(growth - 1) > 0.0005) {
+    ctx.translate(cx, cy);
+    ctx.scale(growth, growth);
+    ctx.translate(-cx, -cy);
+  }
+  draw();
+  ctx.restore();
+}
+
+function fillRingPath2D(
+  ctx: CanvasRenderingContext2D,
+  outer: Path2D,
+  inner: Path2D,
+  cx: number,
+  cy: number,
+  growth: number,
+  fill: string | null,
+  alpha: number,
+) {
+  if (!fill) return;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  withGrowthTransform(ctx, cx, cy, growth, () => {
+    ctx.fillStyle = fill;
+    ctx.fill(outer, 'evenodd');
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fill(inner, 'evenodd');
+    ctx.globalCompositeOperation = 'source-over';
+  });
+  ctx.restore();
+}
+
+function strokePath2D(
+  ctx: CanvasRenderingContext2D,
+  path: Path2D,
+  cx: number,
+  cy: number,
+  growth: number,
+  stroke: string,
+  lineWidth: number,
+  alpha: number,
+) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = lineWidth;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  withGrowthTransform(ctx, cx, cy, growth, () => {
+    ctx.stroke(path);
+  });
+  ctx.restore();
+}
+
 function fillRingPaths(
   ctx: CanvasRenderingContext2D,
   outer: Paths,
@@ -253,14 +327,7 @@ function fillRingPaths(
   alpha: number,
 ) {
   if (!fill || outer.length === 0) return;
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.fillStyle = fill;
-  ctx.fill(pathsToPath2D(outer), 'evenodd');
-  ctx.globalCompositeOperation = 'destination-out';
-  ctx.fill(pathsToPath2D(inner), 'evenodd');
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.restore();
+  fillRingPath2D(ctx, pathsToPath2D(outer), pathsToPath2D(inner), 0, 0, 1, fill, alpha);
 }
 
 function strokePaths(
@@ -271,14 +338,58 @@ function strokePaths(
   alpha: number,
 ) {
   if (paths.length === 0) return;
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.strokeStyle = stroke;
-  ctx.lineWidth = lineWidth;
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
-  ctx.stroke(pathsToPath2D(paths));
-  ctx.restore();
+  strokePath2D(ctx, pathsToPath2D(paths), 0, 0, 1, stroke, lineWidth, alpha);
+}
+
+/**
+ * Карусель: count колец циклически смещаются наружу.
+ * phase растёт непрерывно; целая часть — сдвиг слотов, дробная — плавный выход из центра.
+ */
+export function drawVectorRippleCarousel(
+  ctx: CanvasRenderingContext2D,
+  pathAt: (gen: number) => Path2D | null,
+  radiusAt: (gen: number) => number,
+  ringCount: number,
+  phase: number,
+  center: { cx: number; cy: number },
+  stepForGen: (outerGen: number) => number,
+  ringFillForGen: (outerGen: number) => string | null,
+  strokeForGen: ((gen: number) => string) | null,
+  lineWidth: number,
+  alpha: number,
+) {
+  if (ringCount < 1) return;
+
+  const step = ((Math.floor(phase) % ringCount) + ringCount) % ringCount;
+  const frac = phase - Math.floor(phase);
+
+  for (let slot = 0; slot < ringCount; slot++) {
+    const innerGen = (slot + step) % ringCount;
+    const outerGen = innerGen + 1;
+    const inner = pathAt(innerGen);
+    const outer = pathAt(outerGen);
+    if (!inner || !outer) continue;
+
+    const fill = ringFillForGen(outerGen);
+    if (!fill) continue;
+
+    const r = Math.max(1, radiusAt(innerGen));
+    const growth = frac > 0.0005 ? 1 + frac * (stepForGen(outerGen) / r) : 1;
+    fillRingPath2D(ctx, outer, inner, center.cx, center.cy, growth, fill, alpha);
+  }
+
+  if (!strokeForGen) return;
+
+  for (let slot = 0; slot < ringCount; slot++) {
+    const innerGen = (slot + step) % ringCount;
+    const outerGen = innerGen + 1;
+    const outer = pathAt(outerGen);
+    if (!outer) continue;
+
+    const r = Math.max(1, radiusAt(innerGen));
+    const growth = frac > 0.0005 ? 1 + frac * (stepForGen(outerGen) / r) : 1;
+    strokePath2D(ctx, outer, center.cx, center.cy, growth, strokeForGen(outerGen), lineWidth, alpha);
+  }
 }
 
 /**

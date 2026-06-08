@@ -8,18 +8,21 @@ import {
   normalizeExpansion,
   RIPPLE_FLOW_SPEED,
   rippleReach,
-  rippleRingFill,
+  rippleRingFillColor,
   rippleStepRadius,
   rippleStrokeColor,
+  rippleUsesStrokes,
 } from '../utils/rippleOffset';
 import { layoutTextForCanvas } from '../utils/textLayout';
 import {
   buildTextSilhouette,
-  drawVectorRippleStack,
+  drawVectorRippleCarousel,
   getVectorClipper,
   initVectorClipper,
   offsetPaths,
   pathsBoundsCenter,
+  pathsToPath2D,
+  shapeMaxRadius,
 } from '../utils/vectorOffset';
 import { effectOpacity } from '../utils/visualAlpha';
 import type { ModeController, ModeSnapshot } from './types';
@@ -28,8 +31,8 @@ type Lay = { char: string; x: number; bl: number };
 
 const MIN_COUNT = 2;
 const MAX_COUNT = 100;
-const GC_MARGIN = 1;
-const MAX_OFFSET_PER_TICK = 2;
+/** Сколько offset-шагов считаем за кадр — не блокируем UI. */
+const BUILD_BUDGET = 4;
 
 function settings(s: ModeSnapshot): ExpansionSettings {
   return normalizeExpansion({
@@ -57,19 +60,21 @@ export function createExpansionMode(
   let layoutSig = '';
 
   const shapes = new Map<number, Paths>();
+  const path2DCache = new Map<number, Path2D>();
+  const radiusCache = new Map<number, number>();
   let topGen = 0;
   let chainSig = '';
   let shapeCenter = { cx: 0, cy: 0 };
 
   let clipperReady = false;
   let flowPhase = 0;
-  let flowHead = 0;
   let tickerFn: (() => void) | null = null;
   let tabVisible = true;
 
   const effectLayer = document.createElement('canvas');
   const effectCtx = effectLayer.getContext('2d');
   let layerKey = '';
+  let layerReady = false;
 
   function onVis() {
     tabVisible = !document.hidden;
@@ -95,6 +100,7 @@ export function createExpansionMode(
       s.letterSpacing,
       w,
       h,
+      s.lineHeight,
     );
     layoutFontSize = block.effectiveFontSize;
     lays = block.glyphs.map((g) => ({ char: g.char, x: g.x, bl: g.baseline }));
@@ -103,24 +109,14 @@ export function createExpansionMode(
   function ensureLayout() {
     const s = getSnap();
     const { w, h } = viewport();
-    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${w}|${h}`;
+    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${s.lineHeight}|${w}|${h}`;
     if (sig !== layoutSig) {
       layoutSig = sig;
       chainSig = '';
       layerKey = '';
+      layerReady = false;
       flowPhase = 0;
-      flowHead = 0;
       rebuildLayout();
-    }
-  }
-
-  function releaseGen(gen: number) {
-    shapes.delete(gen);
-  }
-
-  function gcBelow(minGen: number) {
-    for (const g of [...shapes.keys()]) {
-      if (g > 0 && g < minGen) releaseGen(g);
     }
   }
 
@@ -149,13 +145,29 @@ export function createExpansionMode(
     );
   }
 
+  function cacheGen(gen: number) {
+    const paths = shapes.get(gen);
+    if (!paths?.length) {
+      path2DCache.delete(gen);
+      radiusCache.delete(gen);
+      return;
+    }
+    path2DCache.set(gen, pathsToPath2D(paths));
+    radiusCache.set(gen, shapeMaxRadius(paths, shapeCenter));
+  }
+
+  function clearCaches() {
+    path2DCache.clear();
+    radiusCache.clear();
+  }
+
   function buildTo(
     exp: ExpansionSettings,
     target: number,
     w: number,
     h: number,
     count: number,
-    budget = MAX_OFFSET_PER_TICK,
+    budget = BUILD_BUDGET,
   ) {
     let n = 0;
     while (topGen < target && n < budget) {
@@ -165,29 +177,30 @@ export function createExpansionMode(
       const nextShape = offsetStep(exp, next, prev, w, h, count);
       if (!nextShape.length) break;
       shapes.set(next, nextShape);
+      cacheGen(next);
       topGen = next;
       n++;
+      layerReady = false;
     }
   }
 
   function resetChain(s: ModeSnapshot) {
     const { w, h } = viewport();
     shapes.clear();
+    clearCaches();
     topGen = 0;
     layerKey = '';
+    layerReady = false;
 
     const clipper = getVectorClipper();
     if (!clipper || w < 32 || h < 32 || lays.length === 0 || !s.opentypeFont) return;
-
-    const exp = settings(s);
-    const count = contourCount(exp);
 
     const shape0 = buildTextSilhouette(clipper, s.opentypeFont, lays, layoutFontSize);
     if (!shape0.length) return;
 
     shapes.set(0, shape0);
     shapeCenter = pathsBoundsCenter(shape0);
-    buildTo(exp, count, w, h, count, count + 2);
+    cacheGen(0);
   }
 
   function ensureChain(s: ModeSnapshot) {
@@ -196,6 +209,7 @@ export function createExpansionMode(
 
     if (w < 32 || h < 32 || lays.length === 0 || !s.opentypeFont) {
       shapes.clear();
+      clearCaches();
       topGen = 0;
       return;
     }
@@ -217,60 +231,82 @@ export function createExpansionMode(
       exp.strokeColor,
       exp.strokeWidth,
       exp.customPalette.join(','),
-      'vector',
+      'vector-v2',
     ].join('|');
 
-    if (sig === chainSig && shapes.has(0) && topGen >= count) return;
-
-    chainSig = sig;
-    flowPhase = 0;
-    flowHead = 0;
-    layerKey = '';
-    resetChain(s);
-  }
-
-  function strokeSig(exp: ExpansionSettings, first: number, last: number): string {
-    if (exp.paletteMode === 'custom') {
-      const parts: string[] = [];
-      for (let g = first; g <= last; g++) parts.push(rippleStrokeColor(exp, g));
-      return parts.join(',');
+    if (sig !== chainSig) {
+      chainSig = sig;
+      flowPhase = 0;
+      layerKey = '';
+      layerReady = false;
+      resetChain(s);
     }
-    return exp.strokeColor;
+
+    if (topGen < count) {
+      buildTo(exp, count, w, h, count, BUILD_BUDGET);
+    }
   }
 
-  function ringFillValue(exp: ExpansionSettings, stageBg: string): string | null {
-    const ringFill = rippleRingFill(exp);
-    if (stageBg === 'transparent') return null;
-    if (ringFill === 'transparent') return stageBg;
-    return ringFill;
+  function colorSig(exp: ExpansionSettings, count: number): string {
+    const parts: string[] = [exp.paletteMode, exp.fillColor, exp.strokeColor];
+    if (exp.paletteMode === 'customFill') {
+      for (let g = 1; g <= count; g++) parts.push(rippleRingFillColor(exp, g));
+    } else if (exp.paletteMode === 'alternatingFill') {
+      for (let g = 1; g <= Math.min(count, 4); g++) parts.push(rippleRingFillColor(exp, g));
+    }
+    return parts.join(',');
+  }
+
+  function ringFillForGen(
+    exp: ExpansionSettings,
+    outerGen: number,
+    stageBg: string,
+  ): string | null {
+    if (exp.paletteMode === 'contourFill') {
+      if (stageBg === 'transparent') return null;
+      const ringFill = rippleRingFillColor(exp, outerGen);
+      if (ringFill === 'transparent') return stageBg;
+      return ringFill;
+    }
+    return rippleRingFillColor(exp, outerGen);
   }
 
   function paintEffectLayer(
     exp: ExpansionSettings,
-    first: number,
-    last: number,
-    fill: string | null,
+    count: number,
+    phase: number,
+    stageBg: string,
     lw: number,
     alpha: number,
     w: number,
     h: number,
+    frozen: boolean,
   ) {
-    const key = `${first}|${last}|${fill}|${lw}|${alpha}|${strokeSig(exp, first, last)}|vector`;
-    if (key === layerKey && effectLayer.width === w && effectLayer.height === h) return;
+    const phaseKey = frozen ? '0' : phase.toFixed(2);
+    const key = `${phaseKey}|${count}|${topGen}|${lw}|${alpha}|${colorSig(exp, count)}`;
+    if (layerReady && key === layerKey && effectLayer.width === w && effectLayer.height === h) return;
     if (!effectCtx) return;
 
     layerKey = key;
+    layerReady = true;
     if (effectLayer.width !== w) effectLayer.width = w;
     if (effectLayer.height !== h) effectLayer.height = h;
     effectCtx.clearRect(0, 0, w, h);
 
-    drawVectorRippleStack(
+    const visibleRings = Math.min(count, topGen);
+    if (visibleRings < 1) return;
+
+    const useStrokes = rippleUsesStrokes(exp);
+    drawVectorRippleCarousel(
       effectCtx,
-      (g) => shapes.get(g) ?? null,
-      first,
-      last,
-      fill,
-      (g) => rippleStrokeColor(exp, g),
+      (g) => path2DCache.get(g) ?? null,
+      (g) => radiusCache.get(g) ?? 1,
+      visibleRings,
+      phase,
+      shapeCenter,
+      (g) => stepPx(exp, g, w, h, count),
+      (g) => ringFillForGen(exp, g, stageBg),
+      useStrokes ? () => rippleStrokeColor(exp) : null,
       lw,
       alpha,
     );
@@ -295,7 +331,7 @@ export function createExpansionMode(
       ensureChain(s);
       clearNeutral(ctx, w, h, s.visual.stageBackground);
 
-      if (!clipperReady || !shapes.has(0) || topGen < 1 || lays.length === 0) {
+      if (!clipperReady || !shapes.has(0) || lays.length === 0) {
         if (s.opentypeFont && lays.length > 0) {
           drawTextTop(s.visual.monochromeColor, effectOpacity(s.visual), s.opentypeFont);
         }
@@ -306,28 +342,18 @@ export function createExpansionMode(
       const count = contourCount(exp);
       const alpha = effectOpacity(s.visual);
       const lw = Math.max(0.35, exp.strokeWidth);
-      const fill = ringFillValue(exp, s.visual.stageBackground);
-
-      let first = 1;
-      let last = count;
-
-      if (!s.visual.sceneFrozen && tabVisible) {
-        flowPhase += RIPPLE_FLOW_SPEED * (gsap.ticker.deltaRatio() / 60) * 9;
-        const head = Math.floor(flowPhase);
-        if (head !== flowHead) {
-          flowHead = head;
-          layerKey = '';
-          buildTo(exp, head + count, w, h, count, MAX_OFFSET_PER_TICK);
-          gcBelow(head - GC_MARGIN);
-        }
-        first = head + 1;
-        last = head + count;
-        if (topGen < last) buildTo(exp, last, w, h, count, MAX_OFFSET_PER_TICK);
+      let phase = 0;
+      const animating = !s.visual.sceneFrozen && tabVisible && topGen >= count;
+      if (animating) {
+        flowPhase += RIPPLE_FLOW_SPEED * 6 * (gsap.ticker.deltaRatio() / 60);
+        phase = flowPhase;
       }
 
-      paintEffectLayer(exp, first, last, fill, lw, alpha, w, h);
-      if (effectCtx && effectLayer.width > 0) {
-        ctx.drawImage(effectLayer, 0, 0);
+      if (topGen >= 1) {
+        paintEffectLayer(exp, count, phase, s.visual.stageBackground, lw, alpha, w, h, !animating);
+        if (effectCtx && effectLayer.width > 0) {
+          ctx.drawImage(effectLayer, 0, 0);
+        }
       }
 
       if (s.opentypeFont) {
@@ -346,10 +372,11 @@ export function createExpansionMode(
       layoutSig = '';
       chainSig = '';
       layerKey = '';
+      layerReady = false;
       shapes.clear();
+      clearCaches();
       topGen = 0;
       flowPhase = 0;
-      flowHead = 0;
       rebuildLayout();
 
       initVectorClipper()

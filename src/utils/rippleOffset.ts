@@ -127,15 +127,29 @@ export function rippleRasterPad(reach: number, w: number, h: number): number {
   return Math.ceil(reach * 1.15 + Math.max(w, h) * 0.12);
 }
 
+export function rippleUsesStrokes(exp: ExpansionSettings): boolean {
+  return exp.paletteMode === 'contourFill';
+}
+
+/** Заливка одного кольца (outerGen = 1…count). */
+export function rippleRingFillColor(exp: ExpansionSettings, outerGen: number): string {
+  if (exp.paletteMode === 'alternatingFill') {
+    return (outerGen - 1) % 2 === 0 ? exp.fillColor : exp.strokeColor;
+  }
+  if (exp.paletteMode === 'customFill') {
+    const pal = exp.customPalette.filter((c) => c.length > 0);
+    if (pal.length >= 1) return pal[(outerGen - 1) % pal.length]!;
+    return exp.fillColor;
+  }
+  return exp.fillColor;
+}
+
+/** @deprecated используйте rippleRingFillColor */
 export function rippleRingFill(exp: ExpansionSettings): string {
   return exp.fillColor;
 }
 
-export function rippleStrokeColor(exp: ExpansionSettings, gen: number): string {
-  if (exp.paletteMode === 'custom') {
-    const pal = exp.customPalette.filter((c) => c.length > 0);
-    if (pal.length >= 2) return pal[(gen - 1) % pal.length]!;
-  }
+export function rippleStrokeColor(exp: ExpansionSettings): string {
   return exp.strokeColor;
 }
 
@@ -149,8 +163,11 @@ export function normalizeExpansion(exp: ExpansionSettings): ExpansionSettings {
   if (typeof legacy.spacingSpread === 'number' && exp.falloffStrength === undefined) {
     e.falloffStrength = legacy.spacingSpread;
   }
-  if (legacy.rippleColorMode === 'custom') e.paletteMode = 'custom';
-  if (legacy.rippleColorMode === 'dual') e.paletteMode = 'twoColors';
+  const pm = e.paletteMode as string;
+  if (pm === 'twoColors') e.paletteMode = 'contourFill';
+  if (pm === 'custom') e.paletteMode = 'customFill';
+  if (legacy.rippleColorMode === 'custom') e.paletteMode = 'customFill';
+  if (legacy.rippleColorMode === 'dual') e.paletteMode = 'contourFill';
   if (typeof legacy.flowBiasX === 'number') e.horizontalBias = legacy.flowBiasX;
   if (typeof legacy.flowBiasY === 'number') e.verticalBias = legacy.flowBiasY;
   if (typeof legacy.colorB === 'string' && !exp.strokeColor) e.strokeColor = legacy.colorB;
