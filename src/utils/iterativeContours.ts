@@ -10,6 +10,8 @@ export type ShapeStepParams = {
   baseThreshold: number;
   /** 0…1 — сильнее выпрямляет дальние контуры */
   waveFlatten: number;
+  /** с какого шага включать Smooth (раньше — только Offset) */
+  smoothFromStep: number;
 };
 
 function ptKey(x: number, y: number): string {
@@ -228,6 +230,9 @@ export function expandShapeStep(
   smoothB: Uint8Array,
 ): Uint8Array {
   offsetMaskInto(prev, offsetBuf, cw, ch, params.radiusCells, distBuf);
+  if (stepIndex < params.smoothFromStep) {
+    return new Uint8Array(offsetBuf);
+  }
   const sp = smoothParamsForStep(stepIndex, params);
   return smoothMask(offsetBuf, cw, ch, sp.passes, sp.threshold, sp.kernel, smoothA, smoothB);
 }
@@ -281,10 +286,27 @@ function appendLoop(ctx: CanvasRenderingContext2D, loop: Pt[]) {
   ctx.closePath();
 }
 
-function paintMaskRegion(
+/** Заливка всей формы цветом фона + обводка контура (Shapeₙ). */
+export function drawShapeLayer(
   ctx: CanvasRenderingContext2D,
   mask: Uint8Array,
-  prevMask: Uint8Array | null,
+  loops: Pt[][],
+  cw: number,
+  ch: number,
+  cell: number,
+  fill: string | null,
+  stroke: string,
+  lineWidth: number,
+  alpha: number,
+  scratch: HTMLCanvasElement,
+) {
+  paintMaskFull(ctx, mask, cw, ch, cell, fill, alpha, scratch);
+  strokeContourLoops(ctx, loops, stroke, lineWidth, alpha);
+}
+
+function paintMaskFull(
+  ctx: CanvasRenderingContext2D,
+  mask: Uint8Array,
   cw: number,
   ch: number,
   cell: number,
@@ -304,7 +326,6 @@ function paintMaskRegion(
   const img = octx.createImageData(cw, ch);
   for (let i = 0; i < mask.length; i++) {
     if (!mask[i]) continue;
-    if (prevMask && prevMask[i]) continue;
     const p = i * 4;
     img.data[p] = 255;
     img.data[p + 1] = 255;
@@ -330,7 +351,8 @@ function paintMaskRegion(
   ctx.restore();
 }
 
-function strokeContourLoops(
+/** Только обводка контура — каждая волна отдельной линией на фоне. */
+export function strokeContourLoops(
   ctx: CanvasRenderingContext2D,
   loops: Pt[][],
   stroke: string,
@@ -356,14 +378,11 @@ function strokeContourLoops(
   ctx.restore();
 }
 
-/**
- * Кольцо между предыдущей и текущей формой (заливка фоном) + обводка внешнего контура.
- * Так все волны видны одновременно, как в референсе 36Days.
- */
+/** @deprecated кольцевая заливка — для Ripple используйте drawShapeLayer */
 export function drawRippleRingLayer(
   ctx: CanvasRenderingContext2D,
   mask: Uint8Array,
-  prevMask: Uint8Array | null,
+  _prevMask: Uint8Array | null,
   loops: Pt[][],
   cw: number,
   ch: number,
@@ -374,6 +393,5 @@ export function drawRippleRingLayer(
   alpha: number,
   scratch: HTMLCanvasElement,
 ) {
-  paintMaskRegion(ctx, mask, prevMask, cw, ch, cell, fill, alpha, scratch);
-  strokeContourLoops(ctx, loops, stroke, lineWidth, alpha);
+  drawShapeLayer(ctx, mask, loops, cw, ch, cell, fill, stroke, lineWidth, alpha, scratch);
 }

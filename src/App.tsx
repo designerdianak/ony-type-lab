@@ -25,7 +25,7 @@ const DEFAULT_WEIGHT =
 function modeHint(mode: LabModeId): string {
   switch (mode) {
     case 'expansion':
-      return 'Копии = число волн; расстояние = шаг Offset. Чёрный фон + светлый контур как в референсе';
+      return 'Каждая буква — своя цепочка волн; заливка фоном + контур; текст всегда сверху';
     case 'colorStack':
       return 'Залитые копии со смещением — имитация объёма';
     case 'bloom':
@@ -294,21 +294,7 @@ export default function App() {
         <div className="lab__section-title">Режим</div>
         <div className="lab__row">
           {LAB_MODES.map((m) => (
-            <RoundButton
-              key={m.id}
-              active={mode === m.id}
-              onClick={() => {
-                setMode(m.id);
-                if (m.id === 'expansion') {
-                  setVisual((v) => ({
-                    ...v,
-                    colorMode: 'monochrome',
-                    stageBackground: '#000000',
-                    monochromeColor: '#ffffff',
-                  }));
-                }
-              }}
-            >
+            <RoundButton key={m.id} active={mode === m.id} onClick={() => setMode(m.id)}>
               {m.shortLabel}
             </RoundButton>
           ))}
