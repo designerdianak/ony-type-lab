@@ -35,7 +35,7 @@ function modeHint(mode: LabModeId): string {
     case 'symbol':
       return 'Клик — вкл/выкл символ поверх буквы';
     case 'elastic':
-      return 'Градиентный поток от букв в заданном направлении';
+      return 'Фиксированный текст, анимированный градиентный шлейф позади';
     case 'trailWalker':
       return 'Offset-след за текстом — как Change Means Business (AGOF)';
     case 'softBody':
@@ -810,6 +810,16 @@ export default function App() {
               value={visual.elastic.stepSize}
               format={(n) => n.toFixed(2)}
               onChange={(v) => setVisual((s) => ({ ...s, elastic: { ...s.elastic, stepSize: v } }))}
+            />
+            <LabeledSlider
+              label="Скорость градиента"
+              min={0}
+              max={2}
+              step={0.02}
+              freeInput
+              value={visual.elastic.flowSpeed ?? 0.45}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) => setVisual((s) => ({ ...s, elastic: { ...s.elastic, flowSpeed: v } }))}
             />
             <RoundToggle
               label="Случайный градиент"

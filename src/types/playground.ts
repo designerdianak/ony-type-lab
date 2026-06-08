@@ -101,6 +101,8 @@ export interface ElasticSettings {
   flowLength: number;
   directionDeg: number;
   stepSize: number;
+  /** Скорость перетекания градиента по шлейфу. */
+  flowSpeed: number;
   randomGradient: boolean;
   colorA: string;
   colorB: string;
@@ -223,6 +225,7 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
     flowLength: 42,
     directionDeg: 90,
     stepSize: 0.55,
+    flowSpeed: 0.45,
     randomGradient: true,
     colorA: '#ff2bd6',
     colorB: '#6b2cff',

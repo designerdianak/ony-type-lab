@@ -21,6 +21,8 @@ import {
   initVectorClipper,
   offsetPathsWithBias,
   pathsToPath2D,
+  pathsToRingPath2D,
+  simplifyRipplePaths,
 } from '../utils/vectorOffset';
 import { effectOpacity } from '../utils/visualAlpha';
 import type { ModeController, ModeSnapshot } from './types';
@@ -29,6 +31,8 @@ type Lay = { char: string; x: number; bl: number };
 
 const MIN_COUNT = 2;
 const MAX_COUNT = 100;
+/** Offset-шагов за кадр — не блокируем UI при Count=100. */
+const BUILD_BUDGET = 6;
 
 function settings(s: ModeSnapshot): ExpansionSettings {
   return normalizeExpansion({
@@ -61,6 +65,7 @@ export function createExpansionMode(
 
   const shapes = new Map<number, Paths>();
   const path2DCache = new Map<number, Path2D>();
+  const ringPath2DCache = new Map<number, Path2D>();
   let topGen = 0;
   let chainSig = '';
 
@@ -71,6 +76,11 @@ export function createExpansionMode(
   const effectCtx = effectLayer.getContext('2d');
   let layerKey = '';
   let layerReady = false;
+
+  const textLayer = document.createElement('canvas');
+  const textCtx = textLayer.getContext('2d');
+  let textLayerKey = '';
+  let textLayerReady = false;
 
   function viewport() {
     const s = getSnap();
@@ -107,6 +117,8 @@ export function createExpansionMode(
       chainSig = '';
       layerKey = '';
       layerReady = false;
+      textLayerKey = '';
+      textLayerReady = false;
       rebuildLayout();
     }
   }
@@ -127,31 +139,50 @@ export function createExpansionMode(
     const clipper = getVectorClipper();
     if (!clipper) return [];
     const delta = stepPx(exp, gen, w, h, count);
-    return offsetPathsWithBias(
+    const raw = offsetPathsWithBias(
       clipper,
       prev,
       delta,
       exp.horizontalBias,
       exp.verticalBias,
       RIPPLE_BIAS_SHIFT,
+      gen,
     );
+    if (!raw.length) return [];
+    return simplifyRipplePaths(clipper, raw, gen);
   }
 
   function cacheGen(gen: number) {
     const paths = shapes.get(gen);
     if (!paths?.length) {
       path2DCache.delete(gen);
+      ringPath2DCache.delete(gen);
       return;
     }
     path2DCache.set(gen, pathsToPath2D(paths));
+    if (gen >= 1) {
+      const inner = shapes.get(gen - 1);
+      if (inner?.length) {
+        ringPath2DCache.set(gen, pathsToRingPath2D(paths, inner));
+      }
+    }
   }
 
   function clearCaches() {
     path2DCache.clear();
+    ringPath2DCache.clear();
   }
 
-  function buildTo(exp: ExpansionSettings, target: number, w: number, h: number, count: number) {
-    while (topGen < target) {
+  function buildTo(
+    exp: ExpansionSettings,
+    target: number,
+    w: number,
+    h: number,
+    count: number,
+    budget = BUILD_BUDGET,
+  ) {
+    let n = 0;
+    while (topGen < target && n < budget) {
       const next = topGen + 1;
       const prev = shapes.get(topGen);
       if (!prev?.length) break;
@@ -161,6 +192,7 @@ export function createExpansionMode(
       cacheGen(next);
       topGen = next;
       layerReady = false;
+      n++;
     }
   }
 
@@ -210,7 +242,7 @@ export function createExpansionMode(
       exp.strokeColor,
       exp.strokeWidth,
       exp.customPalette.join(','),
-      'vector-v3',
+      'vector-v4',
     ].join('|');
 
     if (sig !== chainSig) {
@@ -221,7 +253,7 @@ export function createExpansionMode(
     }
 
     if (topGen < count) {
-      buildTo(exp, count, w, h, count);
+      buildTo(exp, count, w, h, count, BUILD_BUDGET);
     }
   }
 
@@ -249,25 +281,25 @@ export function createExpansionMode(
     return rippleRingFillColor(exp, outerGen);
   }
 
-  function setupEffectSurface(w: number) {
-    if (!effectCtx) return;
+  function setupSurface(layer: HTMLCanvasElement, layerCtx: CanvasRenderingContext2D, w: number, h: number) {
     const dpr = canvasDpr(w, ctx.canvas);
     const pw = Math.max(1, Math.round(w * dpr));
-    const ph = Math.max(1, Math.round(getSnap().h * dpr));
-    if (effectLayer.width !== pw) effectLayer.width = pw;
-    if (effectLayer.height !== ph) effectLayer.height = ph;
-    effectCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    effectCtx.imageSmoothingEnabled = true;
-    effectCtx.imageSmoothingQuality = 'high';
+    const ph = Math.max(1, Math.round(h * dpr));
+    if (layer.width !== pw) layer.width = pw;
+    if (layer.height !== ph) layer.height = ph;
+    layerCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    layerCtx.imageSmoothingEnabled = true;
+    layerCtx.imageSmoothingQuality = 'high';
+    return dpr;
   }
 
-  function blitEffectLayer(w: number, h: number) {
+  function blitLayer(layer: HTMLCanvasElement, w: number, h: number) {
     const dpr = canvasDpr(w, ctx.canvas);
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(effectLayer, 0, 0, effectLayer.width, effectLayer.height, 0, 0, w * dpr, h * dpr);
+    ctx.drawImage(layer, 0, 0, layer.width, layer.height, 0, 0, w * dpr, h * dpr);
     ctx.restore();
   }
 
@@ -280,7 +312,7 @@ export function createExpansionMode(
     w: number,
     h: number,
   ) {
-    const key = `${count}|${topGen}|${lw}|${alpha}|${colorSig(exp, count)}`;
+    const key = `${count}|${topGen}|${lw}|${alpha}|${stageBg}|${colorSig(exp, count)}`;
     if (layerReady && key === layerKey && effectLayer.width > 0) {
       return;
     }
@@ -288,7 +320,7 @@ export function createExpansionMode(
 
     layerKey = key;
     layerReady = true;
-    setupEffectSurface(w);
+    setupSurface(effectLayer, effectCtx, w, h);
     effectCtx.clearRect(0, 0, w, h);
 
     const visibleRings = Math.min(count, topGen);
@@ -305,16 +337,29 @@ export function createExpansionMode(
       useStrokes ? () => rippleStrokeColor(exp) : null,
       lw,
       alpha,
+      useStrokes ? (g) => ringPath2DCache.get(g) ?? null : undefined,
     );
   }
 
-  function drawTextTop(textColor: string, alpha: number, font: opentype.Font) {
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    for (const g of lays) {
-      fillGlyphPath(ctx, font.getPath(g.char, g.x, g.bl, layoutFontSize), textColor);
+  function drawTextTop(textColor: string, alpha: number, font: opentype.Font, w: number, h: number) {
+    const key = `${layoutSig}|${textColor}|${alpha}|${layoutFontSize}`;
+    if (textLayerReady && key === textLayerKey && textLayer.width > 0) {
+      blitLayer(textLayer, w, h);
+      return;
     }
-    ctx.restore();
+    if (!textCtx) return;
+
+    textLayerKey = key;
+    textLayerReady = true;
+    setupSurface(textLayer, textCtx, w, h);
+    textCtx.clearRect(0, 0, w, h);
+    textCtx.save();
+    textCtx.globalAlpha = alpha;
+    for (const g of lays) {
+      fillGlyphPath(textCtx, font.getPath(g.char, g.x, g.bl, layoutFontSize), textColor);
+    }
+    textCtx.restore();
+    blitLayer(textLayer, w, h);
   }
 
   function tick() {
@@ -329,7 +374,7 @@ export function createExpansionMode(
 
       if (!clipperReady || !shapes.has(0) || lays.length === 0) {
         if (s.opentypeFont && lays.length > 0) {
-          drawTextTop(s.visual.monochromeColor, effectOpacity(s.visual), s.opentypeFont);
+          drawTextTop(s.visual.monochromeColor, effectOpacity(s.visual), s.opentypeFont, w, h);
         }
         return;
       }
@@ -342,12 +387,12 @@ export function createExpansionMode(
       if (topGen >= 1) {
         paintEffectLayer(exp, count, s.visual.stageBackground, lw, alpha, w, h);
         if (effectLayer.width > 0) {
-          blitEffectLayer(w, h);
+          blitLayer(effectLayer, w, h);
         }
       }
 
       if (s.opentypeFont) {
-        drawTextTop(s.visual.monochromeColor, alpha, s.opentypeFont);
+        drawTextTop(s.visual.monochromeColor, alpha, s.opentypeFont, w, h);
       }
     } catch (err) {
       console.error('[Ripple] tick failed', err);
@@ -361,6 +406,8 @@ export function createExpansionMode(
       chainSig = '';
       layerKey = '';
       layerReady = false;
+      textLayerKey = '';
+      textLayerReady = false;
       shapes.clear();
       clearCaches();
       topGen = 0;

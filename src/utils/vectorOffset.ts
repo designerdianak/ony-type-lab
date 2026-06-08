@@ -208,12 +208,14 @@ export function offsetPaths(
   clipper: ClipperLibWrapper,
   prev: Paths,
   deltaPx: number,
+  gen = 0,
 ): Paths {
   if (prev.length === 0 || deltaPx <= 0) return [];
 
+  const arcTol = (0.35 + Math.min(gen, 28) * 0.018) * CLIPPER_SCALE;
   const result = clipper.offsetToPaths({
     delta: deltaPx * CLIPPER_SCALE,
-    arcTolerance: 0.35 * CLIPPER_SCALE,
+    arcTolerance: arcTol,
     offsetInputs: [
       {
         joinType: JoinType.Round,
@@ -224,6 +226,17 @@ export function offsetPaths(
   });
 
   return result?.length ? result : [];
+}
+
+/** Упрощение вершин на дальних поколениях — меньше точек, быстрее отрисовка. */
+export function simplifyRipplePaths(
+  clipper: ClipperLibWrapper,
+  paths: Paths,
+  gen: number,
+): Paths {
+  if (gen < 8 || paths.length === 0) return paths;
+  const dist = gen > 22 ? 2.2 : gen > 14 ? 1.4 : 0.75;
+  return clipper.cleanPolygons(paths, dist * (CLIPPER_SCALE / 64));
 }
 
 /**
@@ -237,8 +250,9 @@ export function offsetPathsWithBias(
   biasX: number,
   biasY: number,
   biasShift: number,
+  gen = 0,
 ): Paths {
-  const result = offsetPaths(clipper, prev, deltaPx);
+  const result = offsetPaths(clipper, prev, deltaPx, gen);
   if (!result.length) return [];
 
   const bx = Math.max(-1, Math.min(1, biasX));
@@ -248,18 +262,30 @@ export function offsetPathsWithBias(
   return translatePaths(result, bx * deltaPx * biasShift, by * deltaPx * biasShift);
 }
 
-export function pathsToPath2D(paths: Paths): Path2D {
-  const p = new Path2D();
+function appendPathsToPath2D(target: Path2D, paths: Paths) {
   for (const path of paths) {
     if (path.length < 2) continue;
     const first = fromInt(path[0]!);
-    p.moveTo(first.x, first.y);
+    target.moveTo(first.x, first.y);
     for (let i = 1; i < path.length; i++) {
       const pt = fromInt(path[i]!);
-      p.lineTo(pt.x, pt.y);
+      target.lineTo(pt.x, pt.y);
     }
-    p.closePath();
+    target.closePath();
   }
+}
+
+export function pathsToPath2D(paths: Paths): Path2D {
+  const p = new Path2D();
+  appendPathsToPath2D(p, paths);
+  return p;
+}
+
+/** Кольцо outer+inner одним контуром — один fill(evenodd) вместо destination-out. */
+export function pathsToRingPath2D(outer: Paths, inner: Paths): Path2D {
+  const p = new Path2D();
+  appendPathsToPath2D(p, outer);
+  appendPathsToPath2D(p, inner);
   return p;
 }
 
@@ -288,23 +314,6 @@ function fillRingPath2D(
     ctx.globalCompositeOperation = 'destination-out';
     ctx.fill(inner, 'evenodd');
     ctx.globalCompositeOperation = 'source-over';
-  });
-  ctx.restore();
-}
-
-function fillSolidPath2D(
-  ctx: CanvasRenderingContext2D,
-  path: Path2D,
-  dx: number,
-  dy: number,
-  fill: string,
-  alpha: number,
-) {
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.fillStyle = fill;
-  withTranslate(ctx, dx, dy, () => {
-    ctx.fill(path, 'evenodd');
   });
   ctx.restore();
 }
@@ -356,7 +365,7 @@ export type RippleDrawStyle = 'ring' | 'solid';
 
 type RippleSlot = { innerGen: number; outerGen: number };
 
-/** Все кольца/заливки offset-цепочки без анимации. */
+/** Все кольца/заливки offset-цепочки без анимации (батчинг + evenodd-кольца). */
 export function drawVectorRippleStatic(
   ctx: CanvasRenderingContext2D,
   pathAt: (gen: number) => Path2D | null,
@@ -366,6 +375,7 @@ export function drawVectorRippleStatic(
   strokeForGen: ((gen: number) => string) | null,
   lineWidth: number,
   alpha: number,
+  ringPathAt?: (outerGen: number) => Path2D | null,
 ) {
   if (ringCount < 1) return;
 
@@ -379,28 +389,48 @@ export function drawVectorRippleStatic(
       ? [...slots].sort((a, b) => b.outerGen - a.outerGen)
       : slots;
 
+  ctx.save();
+  ctx.globalAlpha = alpha;
+
   for (const { innerGen, outerGen } of order) {
-    const outer = pathAt(outerGen);
     const fill = ringFillForGen(outerGen);
-    if (!outer || !fill) continue;
+    if (!fill) continue;
 
     if (drawStyle === 'solid') {
-      fillSolidPath2D(ctx, outer, 0, 0, fill, alpha);
+      const outer = pathAt(outerGen);
+      if (!outer) continue;
+      ctx.fillStyle = fill;
+      ctx.fill(outer, 'evenodd');
       continue;
     }
 
-    const inner = pathAt(innerGen);
-    if (!inner) continue;
-    fillRingPath2D(ctx, outer, inner, 0, 0, fill, alpha);
-  }
+    const ring = ringPathAt?.(outerGen) ?? null;
+    if (ring) {
+      ctx.fillStyle = fill;
+      ctx.fill(ring, 'evenodd');
+      continue;
+    }
 
-  if (!strokeForGen || drawStyle !== 'ring') return;
-
-  for (const { outerGen } of slots) {
     const outer = pathAt(outerGen);
-    if (!outer) continue;
-    strokePath2D(ctx, outer, 0, 0, strokeForGen(outerGen), lineWidth, alpha);
+    const inner = pathAt(innerGen);
+    if (!outer || !inner) continue;
+    fillRingPath2D(ctx, outer, inner, 0, 0, fill, 1);
   }
+
+  if (strokeForGen && drawStyle === 'ring') {
+    const stroke = strokeForGen(1);
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = lineWidth;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    for (const { outerGen } of slots) {
+      const outer = pathAt(outerGen);
+      if (!outer) continue;
+      ctx.stroke(outer);
+    }
+  }
+
+  ctx.restore();
 }
 
 /**
