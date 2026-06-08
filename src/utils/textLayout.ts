@@ -143,6 +143,13 @@ function wrapTextToLines(
   return lines.length ? lines : [''];
 }
 
+/** Визуальная высота блока: от верха первой строки до низа последней. */
+function visualBlockHeight(lineCount: number, lineHeight: number, glyphH: number): number {
+  if (lineCount <= 0) return 0;
+  if (lineCount === 1) return glyphH;
+  return (lineCount - 1) * lineHeight + glyphH;
+}
+
 function layoutLinesFromText(
   ctx: CanvasRenderingContext2D,
   lines: string[],
@@ -154,8 +161,8 @@ function layoutLinesFromText(
 ): GlyphLayout[] {
   const { ascent, descent, lineHeight } = fontMetrics(ctx, fontCss, fontSize, lineHeightRatio);
   const glyphH = ascent + descent;
-  const blockH = lines.length * lineHeight;
-  const blockTop = container.y + (container.h - blockH) * 0.5;
+  const visualH = visualBlockHeight(lines.length, lineHeight, glyphH);
+  const blockTop = container.y + (container.h - visualH) * 0.5;
 
   const glyphs: GlyphLayout[] = [];
   let index = 0;
@@ -232,13 +239,18 @@ export function layoutTextInContainer(
     effectiveFontSize = Math.max(10, fontSize * scale);
     effectiveFontCss = fontCssAtSize(fontCss, effectiveFontSize);
     lines = wrapTextToLines(ctx, clean, effectiveFontCss, letterSpacingPx, container.w);
-    const { lineHeight } = fontMetrics(ctx, effectiveFontCss, effectiveFontSize, lineHeightRatio);
-    const blockH = lines.length * lineHeight;
+    const { ascent, descent, lineHeight } = fontMetrics(
+      ctx,
+      effectiveFontCss,
+      effectiveFontSize,
+      lineHeightRatio,
+    );
+    const visualH = visualBlockHeight(lines.length, lineHeight, ascent + descent);
     const tooMany = lines.length > MAX_LINES;
-    const tooTall = blockH > container.h;
+    const tooTall = visualH > container.h;
     if (!tooMany && !tooTall) break;
 
-    if (tooTall) scale *= Math.max(MIN_FONT_SCALE / scale, (container.h / blockH) * 0.96);
+    if (tooTall) scale *= Math.max(MIN_FONT_SCALE / scale, (container.h / visualH) * 0.96);
     else scale *= 0.9;
   }
 
