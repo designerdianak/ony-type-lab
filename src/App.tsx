@@ -795,12 +795,39 @@ export default function App() {
             />
             <LabeledSlider
               label="Направление °"
-              min={-180}
-              max={180}
+              min={0}
+              max={360}
               freeInput
               value={visual.elastic.directionDeg}
               onChange={(v) => setVisual((s) => ({ ...s, elastic: { ...s.elastic, directionDeg: v } }))}
             />
+            <div className="lab__field">
+              <span>Градиент шлейфа</span>
+              <div className="lab__row">
+                <RoundButton
+                  active={(visual.elastic.trailGradientMode ?? 'striped') === 'striped'}
+                  onClick={() =>
+                    setVisual((s) => ({
+                      ...s,
+                      elastic: { ...s.elastic, trailGradientMode: 'striped' },
+                    }))
+                  }
+                >
+                  Полосатый
+                </RoundButton>
+                <RoundButton
+                  active={visual.elastic.trailGradientMode === 'smooth'}
+                  onClick={() =>
+                    setVisual((s) => ({
+                      ...s,
+                      elastic: { ...s.elastic, trailGradientMode: 'smooth' },
+                    }))
+                  }
+                >
+                  Плавный
+                </RoundButton>
+              </div>
+            </div>
             <LabeledSlider
               label="Шаг смещения"
               min={0.1}
@@ -827,37 +854,39 @@ export default function App() {
               onChange={(v) => setVisual((s) => ({ ...s, elastic: { ...s.elastic, randomGradient: v } }))}
             />
             {!visual.elastic.randomGradient && (
-              <>
-                <div className="lab__field lab__field--row">
-                  <label htmlFor="g-a">Цвет A</label>
-                  <input
-                    id="g-a"
-                    type="color"
-                    value={visual.elastic.colorA}
-                    onChange={(e) =>
-                      setVisual((s) => ({ ...s, elastic: { ...s.elastic, colorA: e.target.value } }))
-                    }
-                  />
-                  <label htmlFor="g-b">B</label>
-                  <input
-                    id="g-b"
-                    type="color"
-                    value={visual.elastic.colorB}
-                    onChange={(e) =>
-                      setVisual((s) => ({ ...s, elastic: { ...s.elastic, colorB: e.target.value } }))
-                    }
-                  />
-                  <label htmlFor="g-c">C</label>
-                  <input
-                    id="g-c"
-                    type="color"
-                    value={visual.elastic.colorC}
-                    onChange={(e) =>
-                      setVisual((s) => ({ ...s, elastic: { ...s.elastic, colorC: e.target.value } }))
-                    }
-                  />
-                </div>
-              </>
+              <div className="lab__field lab__field--row">
+                <label htmlFor="g-a">Цвет A</label>
+                <input
+                  id="g-a"
+                  type="color"
+                  value={visual.elastic.colorA}
+                  onChange={(e) =>
+                    setVisual((s) => ({ ...s, elastic: { ...s.elastic, colorA: e.target.value } }))
+                  }
+                />
+                <label htmlFor="g-b">B</label>
+                <input
+                  id="g-b"
+                  type="color"
+                  value={visual.elastic.colorB}
+                  onChange={(e) =>
+                    setVisual((s) => ({ ...s, elastic: { ...s.elastic, colorB: e.target.value } }))
+                  }
+                />
+                {(visual.elastic.trailGradientMode ?? 'striped') === 'striped' && (
+                  <>
+                    <label htmlFor="g-c">C</label>
+                    <input
+                      id="g-c"
+                      type="color"
+                      value={visual.elastic.colorC}
+                      onChange={(e) =>
+                        setVisual((s) => ({ ...s, elastic: { ...s.elastic, colorC: e.target.value } }))
+                      }
+                    />
+                  </>
+                )}
+              </div>
             )}
           </>
         )}

@@ -1,6 +1,12 @@
 import gsap from 'gsap';
 import type { Paths } from 'js-angusj-clipper';
-import { colorForGlyph, gradientAt, mulberry32, randomVividPalette } from '../utils/colors';
+import {
+  colorForGlyph,
+  gradientAt,
+  lerpColor,
+  mulberry32,
+  randomVividPalette,
+} from '../utils/colors';
 import { applyMultiplyBlend, clearNeutral } from '../utils/canvas';
 import { fillGlyphPath } from '../utils/opentypeCanvas';
 import { layoutTextForCanvas, type GlyphLayout } from '../utils/textLayout';
@@ -19,7 +25,6 @@ type Lay = { char: string; x: number; bl: number };
 type LineExtrusion = {
   path2D: Path2D;
   anchor: { cx: number; cy: number };
-  awayY: number;
   lays: Lay[];
 };
 
@@ -50,11 +55,14 @@ export function createGradientFlowMode(
   let clipperReady = false;
 
   let layoutFontSize = 72;
-  let blockMidY = 0;
   let lines: LineExtrusion[] = [];
 
   const trailLayer = document.createElement('canvas');
   const trailCtx = trailLayer.getContext('2d');
+  const maskLayer = document.createElement('canvas');
+  const maskCtx = maskLayer.getContext('2d');
+  const gradLayer = document.createElement('canvas');
+  const gradCtx = gradLayer.getContext('2d');
   let trailKey = '';
   let trailReady = false;
 
@@ -86,24 +94,19 @@ export function createGradientFlowMode(
       s.lineHeight,
     );
     layoutFontSize = block.effectiveFontSize;
-    blockMidY = block.container.y + block.container.h * 0.5;
 
     const clipper = getVectorClipper();
     if (!clipper || !s.opentypeFont) return;
 
     const rows = groupGlyphsByLine(block.glyphs, layoutFontSize);
-    const multiLine = rows.length > 1;
     for (const row of rows) {
       const lays: Lay[] = row.map((g) => ({ char: g.char, x: g.x, bl: g.baseline }));
       const shape: Paths = buildTextSilhouette(clipper, s.opentypeFont, lays, layoutFontSize);
       if (!shape.length) continue;
 
-      const baseline = row[0]!.baseline;
-      const awayY = multiLine ? (baseline < blockMidY ? -1 : 1) : 1;
       lines.push({
         path2D: pathsToPath2D(shape),
         anchor: pathsBoundsCenter(shape),
-        awayY,
         lays,
       });
     }
@@ -116,6 +119,7 @@ export function createGradientFlowMode(
       e.directionDeg,
       e.stepSize,
       e.flowSpeed,
+      e.trailGradientMode ?? 'striped',
       e.randomGradient,
       e.colorA,
       e.colorB,
@@ -150,12 +154,52 @@ export function createGradientFlowMode(
 
   function trailStep(s: ModeSnapshot): { tx: number; ty: number } {
     const e = s.visual.elastic;
-    const rad = (e.directionDeg * Math.PI) / 180;
+    const deg = ((e.directionDeg % 360) + 360) % 360;
+    const rad = (deg * Math.PI) / 180;
     const stepPx = Math.max(0.35, e.stepSize * layoutFontSize * 0.032);
     return {
       tx: Math.cos(rad) * stepPx,
       ty: Math.sin(rad) * stepPx,
     };
+  }
+
+  function trailColorAt(s: ModeSnapshot, t: number, smooth: boolean): string {
+    const e = s.visual.elastic;
+    const pal = palette(s);
+    if (e.randomGradient) return gradientAt(pal, t);
+    if (s.visual.colorMode === 'rainbow') {
+      return colorForGlyph({
+        mode: 'rainbow',
+        monochrome: s.visual.monochromeColor,
+        seed: s.visual.rainbowSeed,
+        index: Math.floor(t * 48),
+        total: 48,
+      });
+    }
+    if (smooth) return lerpColor(e.colorA, e.colorB, t);
+    return gradientAt([e.colorA, e.colorB, e.colorC], t);
+  }
+
+  function fillSmoothGradient(
+    target: CanvasRenderingContext2D,
+    s: ModeSnapshot,
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
+    phase: number,
+    w: number,
+    h: number,
+  ) {
+    const stops = 24;
+    const grad = target.createLinearGradient(ax, ay, bx, by);
+    for (let i = 0; i <= stops; i++) {
+      const pos = i / stops;
+      const t = (pos + phase) % 1;
+      grad.addColorStop(pos, trailColorAt(s, t, true));
+    }
+    target.fillStyle = grad;
+    target.fillRect(0, 0, w, h);
   }
 
   function layerCount(s: ModeSnapshot): number {
@@ -183,12 +227,89 @@ export function createGradientFlowMode(
     ctx.restore();
   }
 
+  function paintTrailStriped(
+    s: ModeSnapshot,
+    phase: number,
+    alpha: number,
+    layers: number,
+    tx: number,
+    ty: number,
+  ) {
+    const bands = Math.max(6, Math.min(28, Math.round(layers / 3)));
+
+    for (const line of lines) {
+      for (let i = layers; i >= 1; i--) {
+        const depth = i / layers;
+        const tRaw = (depth + phase) % 1;
+        const t = Math.floor(tRaw * bands) / bands;
+        const fill = trailColorAt(s, t, false);
+
+        trailCtx!.save();
+        trailCtx!.globalAlpha = alpha;
+        trailCtx!.fillStyle = fill;
+        trailCtx!.translate(line.anchor.cx + tx * i, line.anchor.cy + ty * i);
+        trailCtx!.translate(-line.anchor.cx, -line.anchor.cy);
+        trailCtx!.fill(line.path2D, 'evenodd');
+        trailCtx!.restore();
+      }
+    }
+  }
+
+  function paintTrailSmooth(
+    s: ModeSnapshot,
+    phase: number,
+    alpha: number,
+    layers: number,
+    tx: number,
+    ty: number,
+    w: number,
+    h: number,
+  ) {
+    if (!maskCtx || !gradCtx) return;
+
+    for (const line of lines) {
+      setupSurface(maskLayer, maskCtx, w, h);
+      maskCtx.clearRect(0, 0, w, h);
+      maskCtx.fillStyle = '#fff';
+      for (let i = 1; i <= layers; i++) {
+        maskCtx.save();
+        maskCtx.translate(line.anchor.cx + tx * i, line.anchor.cy + ty * i);
+        maskCtx.translate(-line.anchor.cx, -line.anchor.cy);
+        maskCtx.fill(line.path2D, 'evenodd');
+        maskCtx.restore();
+      }
+
+      setupSurface(gradLayer, gradCtx, w, h);
+      gradCtx.clearRect(0, 0, w, h);
+      fillSmoothGradient(
+        gradCtx,
+        s,
+        line.anchor.cx,
+        line.anchor.cy,
+        line.anchor.cx + tx * layers,
+        line.anchor.cy + ty * layers,
+        phase,
+        w,
+        h,
+      );
+      gradCtx.globalCompositeOperation = 'destination-in';
+      gradCtx.drawImage(maskLayer, 0, 0, gradLayer.width, gradLayer.height);
+      gradCtx.globalCompositeOperation = 'source-over';
+
+      trailCtx!.save();
+      trailCtx!.globalAlpha = alpha;
+      trailCtx!.drawImage(gradLayer, 0, 0, gradLayer.width, gradLayer.height, 0, 0, w, h);
+      trailCtx!.restore();
+    }
+  }
+
   function paintTrail(s: ModeSnapshot, phase: number, alpha: number, w: number, h: number, animating: boolean) {
     const e = s.visual.elastic;
     const pal = palette(s);
+    const mode = e.trailGradientMode ?? 'striped';
     const layers = layerCount(s);
     const { tx, ty } = trailStep(s);
-    const key = `${layoutSig}|${layers}|${e.directionDeg}|${e.stepSize}|${pal.join(',')}|${phase.toFixed(3)}|${alpha}`;
+    const key = `${layoutSig}|${mode}|${layers}|${e.directionDeg}|${e.stepSize}|${pal.join(',')}|${phase.toFixed(3)}|${alpha}|${s.visual.colorMode}`;
 
     if (!animating && trailReady && key === trailKey && trailLayer.width > 0) {
       return;
@@ -200,35 +321,10 @@ export function createGradientFlowMode(
     setupSurface(trailLayer, trailCtx, w, h);
     trailCtx.clearRect(0, 0, w, h);
 
-    for (const line of lines) {
-      const dirX = tx;
-      const dirY = line.awayY * Math.abs(ty) + line.awayY * Math.max(Math.abs(tx) * 0.15, 0.2);
-
-      for (let i = layers; i >= 1; i--) {
-        const depth = i / layers;
-        const t = (depth + phase) % 1;
-        const fill =
-          s.visual.colorMode === 'rainbow' && !e.randomGradient
-            ? colorForGlyph({
-                mode: 'rainbow',
-                monochrome: s.visual.monochromeColor,
-                seed: s.visual.rainbowSeed,
-                index: Math.floor(t * layers),
-                total: layers,
-              })
-            : gradientAt(pal, t);
-
-        trailCtx.save();
-        trailCtx.globalAlpha = alpha;
-        trailCtx.fillStyle = fill;
-        trailCtx.translate(
-          line.anchor.cx + dirX * i,
-          line.anchor.cy + dirY * i,
-        );
-        trailCtx.translate(-line.anchor.cx, -line.anchor.cy);
-        trailCtx.fill(line.path2D, 'evenodd');
-        trailCtx.restore();
-      }
+    if (mode === 'smooth') {
+      paintTrailSmooth(s, phase, alpha, layers, tx, ty, w, h);
+    } else {
+      paintTrailStriped(s, phase, alpha, layers, tx, ty);
     }
   }
 

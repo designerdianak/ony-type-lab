@@ -96,6 +96,9 @@ export interface SymbolSettings {
   swapEveryFrames: number;
 }
 
+/** Полосатый — дискретные полосы; smooth — непрерывный перелив. */
+export type ElasticTrailGradientMode = 'striped' | 'smooth';
+
 /** Градиентный поток от букв. */
 export interface ElasticSettings {
   flowLength: number;
@@ -103,6 +106,7 @@ export interface ElasticSettings {
   stepSize: number;
   /** Скорость перетекания градиента по шлейфу. */
   flowSpeed: number;
+  trailGradientMode: ElasticTrailGradientMode;
   randomGradient: boolean;
   colorA: string;
   colorB: string;
@@ -226,6 +230,7 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
     directionDeg: 90,
     stepSize: 0.55,
     flowSpeed: 0.45,
+    trailGradientMode: 'striped',
     randomGradient: true,
     colorA: '#ff2bd6',
     colorB: '#6b2cff',
