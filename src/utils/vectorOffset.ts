@@ -262,50 +262,26 @@ export function pathsToPath2D(paths: Paths): Path2D {
   return p;
 }
 
-function withScaleFromCenter(
-  ctx: CanvasRenderingContext2D,
-  cx: number,
-  cy: number,
-  scale: number,
-  draw: () => void,
-) {
+function withTranslate(ctx: CanvasRenderingContext2D, dx: number, dy: number, draw: () => void) {
   ctx.save();
-  if (Math.abs(scale - 1) > 0.0003) {
-    ctx.translate(cx, cy);
-    ctx.scale(scale, scale);
-    ctx.translate(-cx, -cy);
-  }
+  if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) ctx.translate(dx, dy);
   draw();
   ctx.restore();
-}
-
-/** Рост копии от текста (gen−1) к полному gen, frac ∈ [0, 1]. */
-function growthFromText(
-  gen: number,
-  frac: number,
-  radiusAt: (g: number) => number,
-): number {
-  const rOut = Math.max(1, radiusAt(gen));
-  const rIn = Math.max(1, radiusAt(gen - 1));
-  const minS = rIn / rOut;
-  const f = Math.max(0, Math.min(1, frac));
-  return minS + f * (1 - minS);
 }
 
 function fillRingPath2D(
   ctx: CanvasRenderingContext2D,
   outer: Path2D,
   inner: Path2D,
-  cx: number,
-  cy: number,
-  scale: number,
+  dx: number,
+  dy: number,
   fill: string | null,
   alpha: number,
 ) {
   if (!fill) return;
   ctx.save();
   ctx.globalAlpha = alpha;
-  withScaleFromCenter(ctx, cx, cy, scale, () => {
+  withTranslate(ctx, dx, dy, () => {
     ctx.fillStyle = fill;
     ctx.fill(outer, 'evenodd');
     ctx.globalCompositeOperation = 'destination-out';
@@ -318,16 +294,15 @@ function fillRingPath2D(
 function fillSolidPath2D(
   ctx: CanvasRenderingContext2D,
   path: Path2D,
-  cx: number,
-  cy: number,
-  scale: number,
+  dx: number,
+  dy: number,
   fill: string,
   alpha: number,
 ) {
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.fillStyle = fill;
-  withScaleFromCenter(ctx, cx, cy, scale, () => {
+  withTranslate(ctx, dx, dy, () => {
     ctx.fill(path, 'evenodd');
   });
   ctx.restore();
@@ -336,9 +311,8 @@ function fillSolidPath2D(
 function strokePath2D(
   ctx: CanvasRenderingContext2D,
   path: Path2D,
-  cx: number,
-  cy: number,
-  scale: number,
+  dx: number,
+  dy: number,
   stroke: string,
   lineWidth: number,
   alpha: number,
@@ -349,7 +323,7 @@ function strokePath2D(
   ctx.lineWidth = lineWidth;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
-  withScaleFromCenter(ctx, cx, cy, scale, () => {
+  withTranslate(ctx, dx, dy, () => {
     ctx.stroke(path);
   });
   ctx.restore();
@@ -363,7 +337,7 @@ function fillRingPaths(
   alpha: number,
 ) {
   if (!fill || outer.length === 0) return;
-  fillRingPath2D(ctx, pathsToPath2D(outer), pathsToPath2D(inner), 0, 0, 1, fill, alpha);
+  fillRingPath2D(ctx, pathsToPath2D(outer), pathsToPath2D(inner), 0, 0, fill, alpha);
 }
 
 function strokePaths(
@@ -374,76 +348,73 @@ function strokePaths(
   alpha: number,
 ) {
   if (paths.length === 0) return;
-  strokePath2D(ctx, pathsToPath2D(paths), 0, 0, 1, stroke, lineWidth, alpha);
+  strokePath2D(ctx, pathsToPath2D(paths), 0, 0, stroke, lineWidth, alpha);
 }
 
 export type RippleDrawStyle = 'ring' | 'solid';
 
-type RippleSlot = { slot: number; innerGen: number; outerGen: number; frac: number };
+type RippleSlot = { innerGen: number; outerGen: number };
 
-function rippleGrowSlots(ringCount: number, phase: number): RippleSlot[] {
+/** Все count копий на экране; step — циклический сдвиг индексов. */
+function rippleScrollSlots(ringCount: number, phase: number): { slots: RippleSlot[]; frac: number } {
   const step = Math.floor(phase);
-  const base = phase - step;
+  const frac = phase - step;
   const slots: RippleSlot[] = [];
-
   for (let slot = 0; slot < ringCount; slot++) {
-    const frac = base - slot / ringCount;
-    if (frac < 0) continue;
     const innerGen = (slot + step) % ringCount;
-    slots.push({ slot, innerGen, outerGen: innerGen + 1, frac: Math.min(1, frac) });
+    slots.push({ innerGen, outerGen: innerGen + 1 });
   }
-
-  return slots;
+  return { slots, frac };
 }
 
 /**
- * Копии offset появляются у текста и плавно растут наружу.
- * slot 0 — новейшая у текста, дальние — старше и крупнее.
+ * Бесшовный цикл: все копии сразу в полном размере, далее только смещение.
+ * frac→1: сдвиг на один шаг; step++: индексы сдвигаются — шов не виден.
  */
 export function drawVectorRippleCarousel(
   ctx: CanvasRenderingContext2D,
   pathAt: (gen: number) => Path2D | null,
-  radiusAt: (gen: number) => number,
   ringCount: number,
   phase: number,
-  center: { cx: number; cy: number },
   drawStyle: RippleDrawStyle,
   ringFillForGen: (outerGen: number) => string | null,
   strokeForGen: ((gen: number) => string) | null,
   lineWidth: number,
   alpha: number,
+  stepShift: { x: number; y: number },
 ) {
   if (ringCount < 1) return;
 
-  const slots = rippleGrowSlots(ringCount, phase);
-  if (slots.length === 0) return;
+  const { slots, frac } = rippleScrollSlots(ringCount, phase);
+  const dx = stepShift.x * frac;
+  const dy = stepShift.y * frac;
 
-  const order = [...slots].sort((a, b) => b.outerGen - a.outerGen);
+  const order =
+    drawStyle === 'solid'
+      ? [...slots].sort((a, b) => b.outerGen - a.outerGen)
+      : slots;
 
-  for (const { innerGen, outerGen, frac } of order) {
+  for (const { innerGen, outerGen } of order) {
     const outer = pathAt(outerGen);
     const fill = ringFillForGen(outerGen);
     if (!outer || !fill) continue;
 
-    const scale = growthFromText(outerGen, frac, radiusAt);
-
     if (drawStyle === 'solid') {
-      fillSolidPath2D(ctx, outer, center.cx, center.cy, scale, fill, alpha);
+      fillSolidPath2D(ctx, outer, dx, dy, fill, alpha);
       continue;
     }
 
     const inner = pathAt(innerGen);
     if (!inner) continue;
-    fillRingPath2D(ctx, outer, inner, center.cx, center.cy, scale, fill, alpha);
+    fillRingPath2D(ctx, outer, inner, dx, dy, fill, alpha);
   }
 
   if (!strokeForGen || drawStyle !== 'ring') return;
 
-  for (const { outerGen, frac } of slots) {
+  for (const { outerGen } of slots) {
     const outer = pathAt(outerGen);
     if (!outer) continue;
-    const scale = growthFromText(outerGen, frac, radiusAt);
-    strokePath2D(ctx, outer, center.cx, center.cy, scale, strokeForGen(outerGen), lineWidth, alpha);
+    strokePath2D(ctx, outer, dx, dy, strokeForGen(outerGen), lineWidth, alpha);
   }
 }
 

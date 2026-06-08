@@ -66,6 +66,7 @@ export function createExpansionMode(
   let topGen = 0;
   let chainSig = '';
   let shapeCenter = { cx: 0, cy: 0 };
+  let scrollShift = { x: 0, y: 0 };
 
   let clipperReady = false;
   let flowPhase = 0;
@@ -147,6 +148,23 @@ export function createExpansionMode(
     );
   }
 
+  function recomputeScrollShift() {
+    let sx = 0;
+    let sy = 0;
+    let n = 0;
+    for (let g = 0; g < topGen; g++) {
+      const a = shapes.get(g);
+      const b = shapes.get(g + 1);
+      if (!a?.length || !b?.length) continue;
+      const ca = pathsBoundsCenter(a);
+      const cb = pathsBoundsCenter(b);
+      sx += cb.cx - ca.cx;
+      sy += cb.cy - ca.cy;
+      n++;
+    }
+    scrollShift = n > 0 ? { x: sx / n, y: sy / n } : { x: 0, y: 0 };
+  }
+
   function cacheGen(gen: number) {
     const paths = shapes.get(gen);
     if (!paths?.length) {
@@ -156,6 +174,7 @@ export function createExpansionMode(
     }
     path2DCache.set(gen, pathsToPath2D(paths));
     radiusCache.set(gen, shapeMaxRadius(paths, shapeCenter));
+    recomputeScrollShift();
   }
 
   function clearCaches() {
@@ -302,18 +321,18 @@ export function createExpansionMode(
 
     const useStrokes = rippleUsesStrokes(exp);
     const drawStyle = useStrokes ? 'ring' : 'solid';
+    const scrollPhase = topGen >= count ? phase : 0;
     drawVectorRippleCarousel(
       effectCtx,
       (g) => path2DCache.get(g) ?? null,
-      (g) => radiusCache.get(g) ?? 1,
       visibleRings,
-      phase,
-      shapeCenter,
+      scrollPhase,
       drawStyle,
       (g) => ringFillForGen(exp, g, stageBg),
       useStrokes ? () => rippleStrokeColor(exp) : null,
       lw,
       alpha,
+      scrollShift,
     );
   }
 
@@ -350,7 +369,7 @@ export function createExpansionMode(
       let phase = 0;
       const animating = !s.visual.sceneFrozen && tabVisible && topGen >= count;
       if (animating) {
-        flowPhase += RIPPLE_FLOW_SPEED * 1.8 * (gsap.ticker.deltaRatio() / 60);
+        flowPhase += RIPPLE_FLOW_SPEED * (gsap.ticker.deltaRatio() / 60);
         phase = flowPhase;
       }
 
