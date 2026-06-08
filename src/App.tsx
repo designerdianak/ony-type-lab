@@ -74,6 +74,10 @@ export default function App() {
     () => ({ ...DEFAULT_PLAYGROUND_VISUAL.expansion, ...visual.expansion }),
     [visual.expansion],
   );
+  const trailWalker = useMemo(
+    () => ({ ...DEFAULT_PLAYGROUND_VISUAL.trailWalker, ...visual.trailWalker }),
+    [visual.trailWalker],
+  );
 
   const onCanvasReady = useCallback((el: HTMLCanvasElement) => {
     canvasElRef.current = el;
@@ -923,11 +927,23 @@ export default function App() {
 
         {mode === 'trailWalker' && (
           <>
+            <LabeledSlider
+              label="Толщина offset"
+              min={0.05}
+              max={0.5}
+              step={0.01}
+              freeInput
+              value={trailWalker.offsetThickness}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) =>
+                setVisual((s) => ({ ...s, trailWalker: { ...s.trailWalker, offsetThickness: v } }))
+              }
+            />
             <div className="lab__field">
               <span>След</span>
               <div className="lab__row">
                 <RoundButton
-                  active={visual.trailWalker.trailMode === 'fade'}
+                  active={trailWalker.trailMode === 'fade'}
                   onClick={() =>
                     setVisual((s) => ({
                       ...s,
@@ -938,7 +954,7 @@ export default function App() {
                   Затухание
                 </RoundButton>
                 <RoundButton
-                  active={visual.trailWalker.trailMode === 'copies'}
+                  active={trailWalker.trailMode === 'copies'}
                   onClick={() =>
                     setVisual((s) => ({
                       ...s,
@@ -954,7 +970,7 @@ export default function App() {
               <span>Шаг копий</span>
               <div className="lab__row">
                 <RoundButton
-                  active={(visual.trailWalker.stampSpacing ?? 'uniform') === 'uniform'}
+                  active={(trailWalker.stampSpacing ?? 'uniform') === 'uniform'}
                   onClick={() =>
                     setVisual((s) => ({
                       ...s,
@@ -965,7 +981,7 @@ export default function App() {
                   Равномерный
                 </RoundButton>
                 <RoundButton
-                  active={visual.trailWalker.stampSpacing === 'smear'}
+                  active={trailWalker.stampSpacing === 'smear'}
                   onClick={() =>
                     setVisual((s) => ({
                       ...s,
@@ -978,33 +994,21 @@ export default function App() {
               </div>
             </div>
             <LabeledSlider
-              label="Толщина offset"
-              min={0.05}
-              max={0.5}
-              step={0.01}
-              freeInput
-              value={visual.trailWalker.offsetThickness ?? 0.22}
-              format={(n) => n.toFixed(2)}
-              onChange={(v) =>
-                setVisual((s) => ({ ...s, trailWalker: { ...s.trailWalker, offsetThickness: v } }))
-              }
-            />
-            <LabeledSlider
               label="Скорость"
               min={0.05}
               max={2}
               step={0.02}
               freeInput
-              value={visual.trailWalker.speed}
+              value={trailWalker.speed}
               format={(n) => n.toFixed(2)}
               onChange={(v) => setVisual((s) => ({ ...s, trailWalker: { ...s.trailWalker, speed: v } }))}
             />
             <LabeledSlider
-              label={visual.trailWalker.trailMode === 'copies' ? 'Количество копий' : 'Длина следа'}
-              min={visual.trailWalker.trailMode === 'copies' ? 1 : 4}
+              label={trailWalker.trailMode === 'copies' ? 'Количество копий' : 'Длина следа'}
+              min={trailWalker.trailMode === 'copies' ? 1 : 4}
               max={120}
               freeInput
-              value={visual.trailWalker.trailLength}
+              value={trailWalker.trailLength}
               onChange={(v) => setVisual((s) => ({ ...s, trailWalker: { ...s.trailWalker, trailLength: v } }))}
             />
             <LabeledSlider
@@ -1013,7 +1017,7 @@ export default function App() {
               max={1}
               step={0.01}
               freeInput
-              value={visual.trailWalker.worminess}
+              value={trailWalker.worminess}
               format={(n) => `${Math.round(n * 100)}%`}
               onChange={(v) => setVisual((s) => ({ ...s, trailWalker: { ...s.trailWalker, worminess: v } }))}
             />
@@ -1025,7 +1029,7 @@ export default function App() {
               <input
                 id="walk-color"
                 type="color"
-                value={visual.trailWalker.trailColor}
+                value={trailWalker.trailColor}
                 onChange={(e) =>
                   setVisual((s) => ({ ...s, trailWalker: { ...s.trailWalker, trailColor: e.target.value } }))
                 }

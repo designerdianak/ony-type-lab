@@ -31,8 +31,8 @@ type Lay = { char: string; x: number; bl: number };
 
 const MIN_COUNT = 2;
 const MAX_COUNT = 100;
-/** Offset-шагов за кадр — не блокируем UI при Count=100. */
-const BUILD_BUDGET = 6;
+/** Статичный ripple — достраиваем всю цепочку за один проход. */
+const BUILD_BUDGET = MAX_COUNT;
 
 function settings(s: ModeSnapshot): ExpansionSettings {
   return normalizeExpansion({
