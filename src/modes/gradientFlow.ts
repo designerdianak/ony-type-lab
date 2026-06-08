@@ -28,6 +28,10 @@ type LineExtrusion = {
   lays: Lay[];
 };
 
+const TRAIL_MASK_LAYERS = 26;
+const TRAIL_EXTENT_CAP = 48;
+const CHOPPY_BANDS = 14;
+
 function canvasDpr(w: number, canvas: HTMLCanvasElement): number {
   return canvas.width / Math.max(1, w);
 }
@@ -67,9 +71,21 @@ export function createGradientFlowMode(
   let textKey = '';
   let textReady = false;
 
+  const gradScratch = document.createElement('canvas');
+  const gradScratchCtx = gradScratch.getContext('2d');
+  let trailMaskSig = '';
+  const lineMasks: HTMLCanvasElement[] = [];
+  let choppyPaletteCache = '';
+  let choppyPaletteColors: string[] = [];
+
   function choppyPalette(s: ModeSnapshot): string[] {
-    const rng = mulberry32(Math.floor(s.visual.rainbowSeed * 1000));
-    return randomVividPalette(rng() * 1000, 6);
+    const seed = String(s.visual.rainbowSeed);
+    if (seed !== choppyPaletteCache) {
+      choppyPaletteCache = seed;
+      const rng = mulberry32(Math.floor(s.visual.rainbowSeed * 1000));
+      choppyPaletteColors = randomVividPalette(rng() * 1000, 6);
+    }
+    return choppyPaletteColors;
   }
 
   function smoothPalette(s: ModeSnapshot): string[] {
@@ -128,6 +144,11 @@ export function createGradientFlowMode(
     ].join('|');
   }
 
+  function invalidateTrailMasks() {
+    trailMaskSig = '';
+    lineMasks.length = 0;
+  }
+
   function ensureLayout(s: ModeSnapshot) {
     const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${s.lineHeight}|${s.w}|${s.h}|${s.fontUrl}`;
     const es = elasticSig(s);
@@ -139,6 +160,7 @@ export function createGradientFlowMode(
       textKey = '';
       textReady = false;
       flowPhase = 0;
+      invalidateTrailMasks();
       rebuildLines(s);
     } else if (es !== settingsSig) {
       settingsSig = es;
@@ -146,6 +168,7 @@ export function createGradientFlowMode(
       trailReady = false;
       textKey = '';
       textReady = false;
+      invalidateTrailMasks();
     } else if (clipperReady && lines.length === 0 && s.opentypeFont) {
       rebuildLines(s);
     }
@@ -162,29 +185,10 @@ export function createGradientFlowMode(
     };
   }
 
-  function choppyTrailColor(s: ModeSnapshot, t: number): string {
-    return gradientAt(choppyPalette(s), t);
-  }
-
-  function layerCount(s: ModeSnapshot): number {
+  function extentLayers(s: ModeSnapshot): number {
     const e = s.visual.elastic;
-    return Math.max(28, Math.round(e.flowLength * 2.8));
-  }
-
-  const SMOOTH_DENSITY = 14;
-
-  function denseTrailParams(layers: number, tx: number, ty: number, density: number) {
-    return {
-      layers: layers * density,
-      tx: tx / density,
-      ty: ty / density,
-    };
-  }
-
-  /** Цвет по глубине шлейфа (0 = у текста, 1 = хвост). */
-  function smoothTrailColor(s: ModeSnapshot, t: number): string {
-    const u = t - Math.floor(t);
-    return gradientAt(smoothPalette(s), u);
+    const raw = Math.max(28, Math.round(e.flowLength * 2.8));
+    return Math.min(TRAIL_EXTENT_CAP, raw);
   }
 
   function setupSurface(layer: HTMLCanvasElement, layerCtx: CanvasRenderingContext2D, w: number, h: number) {
@@ -207,66 +211,130 @@ export function createGradientFlowMode(
     ctx.restore();
   }
 
-  function paintTrailStriped(
-    s: ModeSnapshot,
-    phase: number,
-    alpha: number,
-    layers: number,
-    tx: number,
-    ty: number,
-  ) {
-    const bands = Math.max(6, Math.min(28, Math.round(layers / 3)));
-
-    for (const line of lines) {
-      for (let i = layers; i >= 1; i--) {
-        const depth = i / layers;
-        const tRaw = (depth + phase) % 1;
-        const t = Math.floor(tRaw * bands) / bands;
-        const fill = choppyTrailColor(s, t);
-
-        trailCtx!.save();
-        trailCtx!.globalAlpha = alpha;
-        trailCtx!.fillStyle = fill;
-        trailCtx!.translate(line.anchor.cx + tx * i, line.anchor.cy + ty * i);
-        trailCtx!.translate(-line.anchor.cx, -line.anchor.cy);
-        trailCtx!.fill(line.path2D, 'evenodd');
-        trailCtx!.restore();
-      }
-    }
-  }
-
-  function paintTrailSmooth(
-    s: ModeSnapshot,
-    phase: number,
-    alpha: number,
-    baseLayers: number,
+  function ensureTrailMasks(
+    extent: number,
     baseTx: number,
     baseTy: number,
     w: number,
     h: number,
   ) {
-    if (!trailCtx) return;
+    const sig = `${layoutSig}|${extent}|${baseTx}|${baseTy}|${w}|${h}`;
+    if (sig === trailMaskSig && lineMasks.length === lines.length) return;
 
-    const { layers, tx, ty } = denseTrailParams(baseLayers, baseTx, baseTy, SMOOTH_DENSITY);
+    trailMaskSig = sig;
+    lineMasks.length = 0;
+
+    const stx = (baseTx * extent) / TRAIL_MASK_LAYERS;
+    const sty = (baseTy * extent) / TRAIL_MASK_LAYERS;
+
+    for (const line of lines) {
+      const mask = document.createElement('canvas');
+      const maskCtx = mask.getContext('2d');
+      if (!maskCtx) continue;
+
+      setupSurface(mask, maskCtx, w, h);
+      maskCtx.clearRect(0, 0, w, h);
+      maskCtx.fillStyle = '#fff';
+      for (let i = 1; i <= TRAIL_MASK_LAYERS; i++) {
+        maskCtx.save();
+        maskCtx.translate(line.anchor.cx + stx * i, line.anchor.cy + sty * i);
+        maskCtx.translate(-line.anchor.cx, -line.anchor.cy);
+        maskCtx.fill(line.path2D, 'evenodd');
+        maskCtx.restore();
+      }
+      lineMasks.push(mask);
+    }
+  }
+
+  function trailGradient(
+    target: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    dirX: number,
+    dirY: number,
+    trailLen: number,
+    phase: number,
+    pal: string[],
+    choppy: boolean,
+  ): CanvasGradient {
+    const shift = phase * trailLen;
+    const gx0 = cx - dirX * shift;
+    const gy0 = cy - dirY * shift;
+    const gx1 = gx0 + dirX * trailLen;
+    const gy1 = gy0 + dirY * trailLen;
+    const grad = target.createLinearGradient(gx0, gy0, gx1, gy1);
+
+    if (choppy) {
+      for (let b = 0; b < CHOPPY_BANDS; b++) {
+        const t = ((b + 0.5) / CHOPPY_BANDS + phase) % 1;
+        const color = gradientAt(pal, t);
+        grad.addColorStop(b / CHOPPY_BANDS, color);
+        grad.addColorStop((b + 1) / CHOPPY_BANDS, color);
+      }
+    } else if (pal.length <= 1) {
+      const c = pal[0] ?? '#000';
+      grad.addColorStop(0, c);
+      grad.addColorStop(1, c);
+    } else {
+      for (let i = 0; i < pal.length; i++) {
+        grad.addColorStop(i / (pal.length - 1), pal[i]!);
+      }
+    }
+    return grad;
+  }
+
+  function paintTrailMasked(
+    s: ModeSnapshot,
+    phase: number,
+    alpha: number,
+    extent: number,
+    baseTx: number,
+    baseTy: number,
+    w: number,
+    h: number,
+    choppy: boolean,
+  ) {
+    if (!trailCtx || !gradScratchCtx) return;
+
+    ensureTrailMasks(extent, baseTx, baseTy, w, h);
+
+    const trailLen = Math.hypot(baseTx * extent, baseTy * extent) || 1;
+    const dirX = (baseTx * extent) / trailLen;
+    const dirY = (baseTy * extent) / trailLen;
+    const pal = choppy ? choppyPalette(s) : smoothPalette(s);
 
     trailCtx.save();
     trailCtx.beginPath();
     trailCtx.rect(0, 0, w, h);
     trailCtx.clip();
 
-    for (const line of lines) {
-      for (let i = layers; i >= 1; i--) {
-        const t = i / layers + phase;
-        const fill = smoothTrailColor(s, t);
+    setupSurface(gradScratch, gradScratchCtx, w, h);
 
-        trailCtx.save();
-        trailCtx.globalAlpha = alpha;
-        trailCtx.fillStyle = fill;
-        trailCtx.translate(line.anchor.cx + tx * i, line.anchor.cy + ty * i);
-        trailCtx.translate(-line.anchor.cx, -line.anchor.cy);
-        trailCtx.fill(line.path2D, 'evenodd');
-        trailCtx.restore();
-      }
+    for (let li = 0; li < lines.length; li++) {
+      const line = lines[li]!;
+      const mask = lineMasks[li];
+      if (!mask) continue;
+
+      gradScratchCtx.clearRect(0, 0, w, h);
+      gradScratchCtx.globalCompositeOperation = 'source-over';
+      gradScratchCtx.fillStyle = trailGradient(
+        gradScratchCtx,
+        line.anchor.cx,
+        line.anchor.cy,
+        dirX,
+        dirY,
+        trailLen,
+        phase,
+        pal,
+        choppy,
+      );
+      gradScratchCtx.fillRect(0, 0, w, h);
+      gradScratchCtx.globalCompositeOperation = 'destination-in';
+      gradScratchCtx.drawImage(mask, 0, 0, mask.width, mask.height, 0, 0, w, h);
+      gradScratchCtx.globalCompositeOperation = 'source-over';
+
+      trailCtx.globalAlpha = alpha;
+      trailCtx.drawImage(gradScratch, 0, 0, gradScratch.width, gradScratch.height, 0, 0, w, h);
     }
 
     trailCtx.restore();
@@ -275,10 +343,11 @@ export function createGradientFlowMode(
   function paintTrail(s: ModeSnapshot, phase: number, alpha: number, w: number, h: number, animating: boolean) {
     const e = s.visual.elastic;
     const fillMode = resolveElasticGradientFill(e);
-    const pal = fillMode === 'choppy' ? choppyPalette(s) : smoothPalette(s);
-    const layers = layerCount(s);
+    const choppy = fillMode === 'choppy';
+    const pal = choppy ? choppyPalette(s) : smoothPalette(s);
+    const extent = extentLayers(s);
     const { tx, ty } = trailStep(s);
-    const key = `${layoutSig}|${fillMode}|${layers}|${e.directionDeg}|${e.stepSize}|${pal.join(',')}|${phase.toFixed(4)}|${alpha}`;
+    const key = `${layoutSig}|${fillMode}|${extent}|${e.directionDeg}|${e.stepSize}|${pal.join(',')}|${phase.toFixed(3)}|${alpha}`;
 
     if (!animating && trailReady && key === trailKey && trailLayer.width > 0) {
       return;
@@ -288,20 +357,9 @@ export function createGradientFlowMode(
     trailKey = key;
     trailReady = !animating;
 
-    if (fillMode === 'smooth') {
-      setupSurface(trailLayer, trailCtx, w, h);
-      trailCtx.clearRect(0, 0, w, h);
-      paintTrailSmooth(s, phase, alpha, layers, tx, ty, w, h);
-    } else {
-      setupSurface(trailLayer, trailCtx, w, h);
-      trailCtx.clearRect(0, 0, w, h);
-      trailCtx.save();
-      trailCtx.beginPath();
-      trailCtx.rect(0, 0, w, h);
-      trailCtx.clip();
-      paintTrailStriped(s, phase, alpha, layers, tx, ty);
-      trailCtx.restore();
-    }
+    setupSurface(trailLayer, trailCtx, w, h);
+    trailCtx.clearRect(0, 0, w, h);
+    paintTrailMasked(s, phase, alpha, extent, tx, ty, w, h, choppy);
   }
 
   function paintText(s: ModeSnapshot, alpha: number, w: number, h: number) {
@@ -369,7 +427,9 @@ export function createGradientFlowMode(
       trailReady = false;
       textKey = '';
       textReady = false;
+      choppyPaletteCache = '';
       lines = [];
+      invalidateTrailMasks();
 
       initVectorClipper()
         .then(() => {

@@ -31,8 +31,8 @@ type Lay = { char: string; x: number; bl: number };
 
 const MIN_COUNT = 2;
 const MAX_COUNT = 100;
-/** Статичный ripple — достраиваем всю цепочку за один проход. */
-const BUILD_BUDGET = MAX_COUNT;
+/** Offset-шагов за кадр — цепочка растёт без фриза UI. */
+const BUILD_BUDGET = 4;
 
 function settings(s: ModeSnapshot): ExpansionSettings {
   return normalizeExpansion({
@@ -152,7 +152,7 @@ export function createExpansionMode(
     return simplifyRipplePaths(clipper, raw, gen);
   }
 
-  function cacheGen(gen: number) {
+  function cacheGen(gen: number, needRings: boolean) {
     const paths = shapes.get(gen);
     if (!paths?.length) {
       path2DCache.delete(gen);
@@ -160,11 +160,13 @@ export function createExpansionMode(
       return;
     }
     path2DCache.set(gen, pathsToPath2D(paths));
-    if (gen >= 1) {
+    if (needRings && gen >= 1) {
       const inner = shapes.get(gen - 1);
       if (inner?.length) {
         ringPath2DCache.set(gen, pathsToRingPath2D(paths, inner));
       }
+    } else {
+      ringPath2DCache.delete(gen);
     }
   }
 
@@ -179,6 +181,7 @@ export function createExpansionMode(
     w: number,
     h: number,
     count: number,
+    needRings: boolean,
     budget = BUILD_BUDGET,
   ) {
     let n = 0;
@@ -189,7 +192,7 @@ export function createExpansionMode(
       const nextShape = offsetStep(exp, next, prev, w, h, count);
       if (!nextShape.length) break;
       shapes.set(next, nextShape);
-      cacheGen(next);
+      cacheGen(next, needRings);
       topGen = next;
       layerReady = false;
       n++;
@@ -211,7 +214,7 @@ export function createExpansionMode(
     if (!shape0.length) return;
 
     shapes.set(0, shape0);
-    cacheGen(0);
+    cacheGen(0, rippleUsesStrokes(settings(s)));
   }
 
   function ensureChain(s: ModeSnapshot) {
@@ -251,9 +254,15 @@ export function createExpansionMode(
       layerReady = false;
       resetChain(s);
     }
+  }
 
+  function buildChainStep(s: ModeSnapshot) {
+    if (!clipperReady || lays.length === 0 || !s.opentypeFont) return;
+    const { w, h } = viewport();
+    const exp = settings(s);
+    const count = contourCount(exp);
     if (topGen < count) {
-      buildTo(exp, count, w, h, count, BUILD_BUDGET);
+      buildTo(exp, count, w, h, count, rippleUsesStrokes(exp), BUILD_BUDGET);
     }
   }
 
@@ -370,6 +379,7 @@ export function createExpansionMode(
 
       ensureLayout();
       ensureChain(s);
+      buildChainStep(s);
       clearNeutral(ctx, w, h, s.visual.stageBackground);
 
       if (!clipperReady || !shapes.has(0) || lays.length === 0) {
