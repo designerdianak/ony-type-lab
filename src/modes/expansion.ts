@@ -1,27 +1,26 @@
 import gsap from 'gsap';
 import type opentype from 'opentype.js';
+import type { Paths } from 'js-angusj-clipper';
 import { DEFAULT_PLAYGROUND_VISUAL, type ExpansionSettings } from '../types/playground';
 import { clearNeutral } from '../utils/canvas';
-import { rasterizeGlyphMask, type GlyphSlot } from '../utils/contourField';
-import {
-  drawOffsetContourCached,
-  extractMaskLoops,
-  maskHasInk,
-  type Pt,
-} from '../utils/iterativeContours';
 import { fillGlyphPath } from '../utils/opentypeCanvas';
 import {
   normalizeExpansion,
-  offsetFromPrevInto,
   RIPPLE_FLOW_SPEED,
-  rippleBaseStepCells,
-  rippleGridCell,
-  rippleRasterPad,
   rippleReach,
   rippleRingFill,
+  rippleStepRadius,
   rippleStrokeColor,
 } from '../utils/rippleOffset';
 import { layoutTextForCanvas } from '../utils/textLayout';
+import {
+  buildTextSilhouette,
+  drawVectorRippleStack,
+  getVectorClipper,
+  initVectorClipper,
+  offsetPaths,
+  pathsBoundsCenter,
+} from '../utils/vectorOffset';
 import { effectOpacity } from '../utils/visualAlpha';
 import type { ModeController, ModeSnapshot } from './types';
 
@@ -44,37 +43,29 @@ function contourCount(exp: ExpansionSettings): number {
   return Math.min(MAX_COUNT, Math.max(MIN_COUNT, Number.isFinite(n) ? n : 28));
 }
 
+function baseStepPx(w: number, h: number, count: number): number {
+  return rippleReach(w, h, 0, 0) / Math.max(2, count);
+}
+
 export function createExpansionMode(
   _canvas: HTMLCanvasElement,
   ctx: CanvasRenderingContext2D,
   getSnap: () => ModeSnapshot,
 ): ModeController {
   let layoutFontSize = 72;
-  let layoutFontCss = '';
   let lays: Lay[] = [];
   let layoutSig = '';
 
-  const shapes = new Map<number, Uint8Array>();
-  const loops = new Map<number, Pt[][]>();
-  const maskPool: Uint8Array[] = [];
+  const shapes = new Map<number, Paths>();
   let topGen = 0;
   let chainSig = '';
+  let shapeCenter = { cx: 0, cy: 0 };
 
-  let gridCw = 0;
-  let gridCh = 0;
-  let gridCell = 2;
-  let gridPad = 0;
-  let baseRadius = 1;
-
-  let workScratch: Uint8Array | null = null;
-
+  let clipperReady = false;
   let flowPhase = 0;
   let flowHead = 0;
   let tickerFn: (() => void) | null = null;
   let tabVisible = true;
-
-  const ringScratch = document.createElement('canvas');
-  const segBuf: { x0: number; y0: number; x1: number; y1: number }[] = [];
 
   const effectLayer = document.createElement('canvas');
   const effectCtx = effectLayer.getContext('2d');
@@ -87,29 +78,6 @@ export function createExpansionMode(
   function viewport() {
     const s = getSnap();
     return { w: Math.max(1, Math.round(s.w)), h: Math.max(1, Math.round(s.h)) };
-  }
-
-  function allocMask(size: number): Uint8Array {
-    const pooled = maskPool.pop();
-    if (pooled && pooled.length === size) return pooled;
-    return new Uint8Array(size);
-  }
-
-  function releaseGen(gen: number) {
-    const m = shapes.get(gen);
-    if (m) maskPool.push(m);
-    shapes.delete(gen);
-    loops.delete(gen);
-  }
-
-  function gcBelow(minGen: number) {
-    for (const g of [...shapes.keys()]) {
-      if (g > 0 && g < minGen) releaseGen(g);
-    }
-  }
-
-  function cacheLoops(gen: number, mask: Uint8Array) {
-    loops.set(gen, extractMaskLoops(mask, gridCw, gridCh, gridCell, segBuf));
   }
 
   function rebuildLayout() {
@@ -129,7 +97,6 @@ export function createExpansionMode(
       h,
     );
     layoutFontSize = block.effectiveFontSize;
-    layoutFontCss = block.effectiveFontCss;
     lays = block.glyphs.map((g) => ({ char: g.char, x: g.x, bl: g.baseline }));
   }
 
@@ -147,40 +114,57 @@ export function createExpansionMode(
     }
   }
 
-  function ensureWork(size: number) {
-    if (!workScratch || workScratch.length !== size) {
-      workScratch = new Uint8Array(size);
+  function releaseGen(gen: number) {
+    shapes.delete(gen);
+  }
+
+  function gcBelow(minGen: number) {
+    for (const g of [...shapes.keys()]) {
+      if (g > 0 && g < minGen) releaseGen(g);
     }
   }
 
-  function offsetStep(exp: ExpansionSettings, gen: number, prev: Uint8Array): Uint8Array {
-    ensureWork(prev.length);
-    const out = allocMask(prev.length);
-    offsetFromPrevInto(
-      prev,
-      out,
-      gen,
-      gridCw,
-      gridCh,
-      baseRadius,
-      exp.distribution,
-      exp.falloffStrength,
-      exp.horizontalBias,
-      exp.verticalBias,
-      workScratch!,
-    );
-    return out;
+  function stepPx(exp: ExpansionSettings, gen: number, w: number, h: number, count: number): number {
+    const base = baseStepPx(w, h, count);
+    return rippleStepRadius(gen, base, exp.distribution, exp.falloffStrength);
   }
 
-  function buildTo(exp: ExpansionSettings, target: number, budget = MAX_OFFSET_PER_TICK) {
+  function offsetStep(
+    exp: ExpansionSettings,
+    gen: number,
+    prev: Paths,
+    w: number,
+    h: number,
+    count: number,
+  ): Paths {
+    const clipper = getVectorClipper();
+    if (!clipper) return [];
+    return offsetPaths(
+      clipper,
+      prev,
+      stepPx(exp, gen, w, h, count),
+      exp.horizontalBias,
+      exp.verticalBias,
+      shapeCenter,
+    );
+  }
+
+  function buildTo(
+    exp: ExpansionSettings,
+    target: number,
+    w: number,
+    h: number,
+    count: number,
+    budget = MAX_OFFSET_PER_TICK,
+  ) {
     let n = 0;
     while (topGen < target && n < budget) {
       const next = topGen + 1;
       const prev = shapes.get(topGen);
-      if (!prev) break;
-      const mask = offsetStep(exp, next, prev);
-      shapes.set(next, mask);
-      cacheLoops(next, mask);
+      if (!prev?.length) break;
+      const nextShape = offsetStep(exp, next, prev, w, h, count);
+      if (!nextShape.length) break;
+      shapes.set(next, nextShape);
       topGen = next;
       n++;
     }
@@ -188,71 +172,42 @@ export function createExpansionMode(
 
   function resetChain(s: ModeSnapshot) {
     const { w, h } = viewport();
-    for (const g of shapes.keys()) releaseGen(g);
+    shapes.clear();
     topGen = 0;
-    workScratch = null;
     layerKey = '';
-    maskPool.length = 0;
 
-    if (w < 32 || h < 32 || lays.length === 0) return;
+    const clipper = getVectorClipper();
+    if (!clipper || w < 32 || h < 32 || lays.length === 0 || !s.opentypeFont) return;
 
     const exp = settings(s);
     const count = contourCount(exp);
-    const reach = rippleReach(w, h, exp.horizontalBias, exp.verticalBias);
-    const stepPx = reach / count;
-    gridCell = rippleGridCell(stepPx, w, h, count);
-    gridPad = rippleRasterPad(reach, w, h);
-    baseRadius = rippleBaseStepCells(w, h, count, gridCell, exp.horizontalBias, exp.verticalBias);
 
-    const rw = w + gridPad * 2;
-    const rh = h + gridPad * 2;
-    const slots: GlyphSlot[] = lays.map((g) => ({
-      char: g.char,
-      x: g.x + gridPad,
-      bl: g.bl + gridPad,
-    }));
+    const shape0 = buildTextSilhouette(clipper, s.opentypeFont, lays, layoutFontSize);
+    if (!shape0.length) return;
 
-    const raster = rasterizeGlyphMask(
-      rw,
-      rh,
-      gridCell,
-      slots,
-      layoutFontCss || s.fontCss,
-      layoutFontSize,
-      s.opentypeFont,
-    );
-    if (!maskHasInk(raster.mask)) return;
-
-    gridCw = raster.cw;
-    gridCh = raster.ch;
-    const shape0 = allocMask(raster.mask.length);
-    shape0.set(raster.mask);
     shapes.set(0, shape0);
-    buildTo(exp, count, count + 2);
+    shapeCenter = pathsBoundsCenter(shape0);
+    buildTo(exp, count, w, h, count, count + 2);
   }
 
   function ensureChain(s: ModeSnapshot) {
     const { w, h } = viewport();
-    if (w < 32 || h < 32 || lays.length === 0) {
-      for (const g of shapes.keys()) releaseGen(g);
+    if (!clipperReady) return;
+
+    if (w < 32 || h < 32 || lays.length === 0 || !s.opentypeFont) {
+      shapes.clear();
       topGen = 0;
       return;
     }
 
     const exp = settings(s);
     const count = contourCount(exp);
-    const reach = rippleReach(w, h, exp.horizontalBias, exp.verticalBias);
-    const stepPx = reach / count;
-    const cell = rippleGridCell(stepPx, w, h, count);
-    const pad = rippleRasterPad(reach, w, h);
-    const radius = rippleBaseStepCells(w, h, count, cell, exp.horizontalBias, exp.verticalBias);
+    const step = baseStepPx(w, h, count);
 
     const sig = [
       layoutSig,
       count,
-      cell,
-      pad,
-      radius,
+      step,
       exp.distribution,
       exp.falloffStrength,
       exp.horizontalBias,
@@ -262,6 +217,7 @@ export function createExpansionMode(
       exp.strokeColor,
       exp.strokeWidth,
       exp.customPalette.join(','),
+      'vector',
     ].join('|');
 
     if (sig === chainSig && shapes.has(0) && topGen >= count) return;
@@ -299,7 +255,7 @@ export function createExpansionMode(
     w: number,
     h: number,
   ) {
-    const key = `${first}|${last}|${fill}|${lw}|${alpha}|${strokeSig(exp, first, last)}|${gridPad}|${gridCell}`;
+    const key = `${first}|${last}|${fill}|${lw}|${alpha}|${strokeSig(exp, first, last)}|vector`;
     if (key === layerKey && effectLayer.width === w && effectLayer.height === h) return;
     if (!effectCtx) return;
 
@@ -308,22 +264,15 @@ export function createExpansionMode(
     if (effectLayer.height !== h) effectLayer.height = h;
     effectCtx.clearRect(0, 0, w, h);
 
-    drawOffsetContourCached(
+    drawVectorRippleStack(
       effectCtx,
       (g) => shapes.get(g) ?? null,
-      (g) => loops.get(g) ?? null,
       first,
       last,
-      gridCw,
-      gridCh,
-      gridCell,
-      -gridPad,
-      -gridPad,
       fill,
       (g) => rippleStrokeColor(exp, g),
       lw,
       alpha,
-      ringScratch,
     );
   }
 
@@ -346,10 +295,15 @@ export function createExpansionMode(
       ensureChain(s);
       clearNeutral(ctx, w, h, s.visual.stageBackground);
 
+      if (!clipperReady || !shapes.has(0) || topGen < 1 || lays.length === 0) {
+        if (s.opentypeFont && lays.length > 0) {
+          drawTextTop(s.visual.monochromeColor, effectOpacity(s.visual), s.opentypeFont);
+        }
+        return;
+      }
+
       const exp = settings(s);
       const count = contourCount(exp);
-      if (!shapes.has(0) || topGen < 1 || lays.length === 0) return;
-
       const alpha = effectOpacity(s.visual);
       const lw = Math.max(0.35, exp.strokeWidth);
       const fill = ringFillValue(exp, s.visual.stageBackground);
@@ -363,12 +317,12 @@ export function createExpansionMode(
         if (head !== flowHead) {
           flowHead = head;
           layerKey = '';
-          buildTo(exp, head + count, MAX_OFFSET_PER_TICK);
+          buildTo(exp, head + count, w, h, count, MAX_OFFSET_PER_TICK);
           gcBelow(head - GC_MARGIN);
         }
         first = head + 1;
         last = head + count;
-        if (topGen < last) buildTo(exp, last, MAX_OFFSET_PER_TICK);
+        if (topGen < last) buildTo(exp, last, w, h, count, MAX_OFFSET_PER_TICK);
       }
 
       paintEffectLayer(exp, first, last, fill, lw, alpha, w, h);
@@ -388,16 +342,23 @@ export function createExpansionMode(
     start() {
       document.addEventListener('visibilitychange', onVis);
       tabVisible = !document.hidden;
+      clipperReady = false;
       layoutSig = '';
       chainSig = '';
       layerKey = '';
-      for (const g of shapes.keys()) releaseGen(g);
+      shapes.clear();
       topGen = 0;
       flowPhase = 0;
       flowHead = 0;
-      workScratch = null;
       rebuildLayout();
-      ensureChain(getSnap());
+
+      initVectorClipper()
+        .then(() => {
+          clipperReady = true;
+          ensureChain(getSnap());
+        })
+        .catch((err) => console.error('[Ripple] clipper load failed', err));
+
       tickerFn = () => tick();
       gsap.ticker.add(tickerFn);
     },
