@@ -7,7 +7,6 @@ import { fillGlyphPath } from '../utils/opentypeCanvas';
 import {
   normalizeExpansion,
   RIPPLE_BIAS_SHIFT,
-  RIPPLE_FLOW_SPEED,
   rippleReach,
   rippleRingFillColor,
   rippleStepRadius,
@@ -17,13 +16,11 @@ import {
 import { layoutTextForCanvas } from '../utils/textLayout';
 import {
   buildTextSilhouette,
-  drawVectorRippleCarousel,
+  drawVectorRippleStatic,
   getVectorClipper,
   initVectorClipper,
   offsetPathsWithBias,
-  pathsBoundsCenter,
   pathsToPath2D,
-  shapeMaxRadius,
 } from '../utils/vectorOffset';
 import { effectOpacity } from '../utils/visualAlpha';
 import type { ModeController, ModeSnapshot } from './types';
@@ -32,8 +29,6 @@ type Lay = { char: string; x: number; bl: number };
 
 const MIN_COUNT = 2;
 const MAX_COUNT = 100;
-/** Сколько offset-шагов считаем за кадр — не блокируем UI. */
-const BUILD_BUDGET = 4;
 
 function settings(s: ModeSnapshot): ExpansionSettings {
   return normalizeExpansion({
@@ -62,25 +57,16 @@ export function createExpansionMode(
 
   const shapes = new Map<number, Paths>();
   const path2DCache = new Map<number, Path2D>();
-  const radiusCache = new Map<number, number>();
   let topGen = 0;
   let chainSig = '';
-  let shapeCenter = { cx: 0, cy: 0 };
-  let scrollShift = { x: 0, y: 0 };
 
   let clipperReady = false;
-  let flowPhase = 0;
   let tickerFn: (() => void) | null = null;
-  let tabVisible = true;
 
   const effectLayer = document.createElement('canvas');
   const effectCtx = effectLayer.getContext('2d');
   let layerKey = '';
   let layerReady = false;
-
-  function onVis() {
-    tabVisible = !document.hidden;
-  }
 
   function viewport() {
     const s = getSnap();
@@ -117,7 +103,6 @@ export function createExpansionMode(
       chainSig = '';
       layerKey = '';
       layerReady = false;
-      flowPhase = 0;
       rebuildLayout();
     }
   }
@@ -148,50 +133,21 @@ export function createExpansionMode(
     );
   }
 
-  function recomputeScrollShift() {
-    let sx = 0;
-    let sy = 0;
-    let n = 0;
-    for (let g = 0; g < topGen; g++) {
-      const a = shapes.get(g);
-      const b = shapes.get(g + 1);
-      if (!a?.length || !b?.length) continue;
-      const ca = pathsBoundsCenter(a);
-      const cb = pathsBoundsCenter(b);
-      sx += cb.cx - ca.cx;
-      sy += cb.cy - ca.cy;
-      n++;
-    }
-    scrollShift = n > 0 ? { x: sx / n, y: sy / n } : { x: 0, y: 0 };
-  }
-
   function cacheGen(gen: number) {
     const paths = shapes.get(gen);
     if (!paths?.length) {
       path2DCache.delete(gen);
-      radiusCache.delete(gen);
       return;
     }
     path2DCache.set(gen, pathsToPath2D(paths));
-    radiusCache.set(gen, shapeMaxRadius(paths, shapeCenter));
-    recomputeScrollShift();
   }
 
   function clearCaches() {
     path2DCache.clear();
-    radiusCache.clear();
   }
 
-  function buildTo(
-    exp: ExpansionSettings,
-    target: number,
-    w: number,
-    h: number,
-    count: number,
-    budget = BUILD_BUDGET,
-  ) {
-    let n = 0;
-    while (topGen < target && n < budget) {
+  function buildTo(exp: ExpansionSettings, target: number, w: number, h: number, count: number) {
+    while (topGen < target) {
       const next = topGen + 1;
       const prev = shapes.get(topGen);
       if (!prev?.length) break;
@@ -200,7 +156,6 @@ export function createExpansionMode(
       shapes.set(next, nextShape);
       cacheGen(next);
       topGen = next;
-      n++;
       layerReady = false;
     }
   }
@@ -220,7 +175,6 @@ export function createExpansionMode(
     if (!shape0.length) return;
 
     shapes.set(0, shape0);
-    shapeCenter = pathsBoundsCenter(shape0);
     cacheGen(0);
   }
 
@@ -257,14 +211,13 @@ export function createExpansionMode(
 
     if (sig !== chainSig) {
       chainSig = sig;
-      flowPhase = 0;
       layerKey = '';
       layerReady = false;
       resetChain(s);
     }
 
     if (topGen < count) {
-      buildTo(exp, count, w, h, count, BUILD_BUDGET);
+      buildTo(exp, count, w, h, count);
     }
   }
 
@@ -295,17 +248,14 @@ export function createExpansionMode(
   function paintEffectLayer(
     exp: ExpansionSettings,
     count: number,
-    phase: number,
     stageBg: string,
     lw: number,
     alpha: number,
     w: number,
     h: number,
-    frozen: boolean,
   ) {
-    const phaseKey = frozen ? '0' : phase.toFixed(4);
-    const key = `${phaseKey}|${count}|${topGen}|${lw}|${alpha}|${colorSig(exp, count)}`;
-    if (frozen && layerReady && key === layerKey && effectLayer.width === w && effectLayer.height === h) {
+    const key = `${count}|${topGen}|${lw}|${alpha}|${colorSig(exp, count)}`;
+    if (layerReady && key === layerKey && effectLayer.width === w && effectLayer.height === h) {
       return;
     }
     if (!effectCtx) return;
@@ -321,18 +271,15 @@ export function createExpansionMode(
 
     const useStrokes = rippleUsesStrokes(exp);
     const drawStyle = useStrokes ? 'ring' : 'solid';
-    const scrollPhase = topGen >= count ? phase : 0;
-    drawVectorRippleCarousel(
+    drawVectorRippleStatic(
       effectCtx,
       (g) => path2DCache.get(g) ?? null,
       visibleRings,
-      scrollPhase,
       drawStyle,
       (g) => ringFillForGen(exp, g, stageBg),
       useStrokes ? () => rippleStrokeColor(exp) : null,
       lw,
       alpha,
-      scrollShift,
     );
   }
 
@@ -366,15 +313,9 @@ export function createExpansionMode(
       const count = contourCount(exp);
       const alpha = effectOpacity(s.visual);
       const lw = Math.max(0.35, exp.strokeWidth);
-      let phase = 0;
-      const animating = !s.visual.sceneFrozen && tabVisible && topGen >= count;
-      if (animating) {
-        flowPhase += RIPPLE_FLOW_SPEED * (gsap.ticker.deltaRatio() / 60);
-        phase = flowPhase;
-      }
 
       if (topGen >= 1) {
-        paintEffectLayer(exp, count, phase, s.visual.stageBackground, lw, alpha, w, h, !animating);
+        paintEffectLayer(exp, count, s.visual.stageBackground, lw, alpha, w, h);
         if (effectCtx && effectLayer.width > 0) {
           ctx.drawImage(effectLayer, 0, 0);
         }
@@ -390,8 +331,6 @@ export function createExpansionMode(
 
   return {
     start() {
-      document.addEventListener('visibilitychange', onVis);
-      tabVisible = !document.hidden;
       clipperReady = false;
       layoutSig = '';
       chainSig = '';
@@ -400,7 +339,6 @@ export function createExpansionMode(
       shapes.clear();
       clearCaches();
       topGen = 0;
-      flowPhase = 0;
       rebuildLayout();
 
       initVectorClipper()
@@ -414,7 +352,6 @@ export function createExpansionMode(
       gsap.ticker.add(tickerFn);
     },
     stop() {
-      document.removeEventListener('visibilitychange', onVis);
       if (tickerFn) gsap.ticker.remove(tickerFn);
       tickerFn = null;
     },

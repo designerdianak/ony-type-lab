@@ -355,39 +355,23 @@ export type RippleDrawStyle = 'ring' | 'solid';
 
 type RippleSlot = { innerGen: number; outerGen: number };
 
-/** Все count копий на экране; step — циклический сдвиг индексов. */
-function rippleScrollSlots(ringCount: number, phase: number): { slots: RippleSlot[]; frac: number } {
-  const step = Math.floor(phase);
-  const frac = phase - step;
-  const slots: RippleSlot[] = [];
-  for (let slot = 0; slot < ringCount; slot++) {
-    const innerGen = (slot + step) % ringCount;
-    slots.push({ innerGen, outerGen: innerGen + 1 });
-  }
-  return { slots, frac };
-}
-
-/**
- * Бесшовный цикл: все копии сразу в полном размере, далее только смещение.
- * frac→1: сдвиг на один шаг; step++: индексы сдвигаются — шов не виден.
- */
-export function drawVectorRippleCarousel(
+/** Все кольца/заливки offset-цепочки без анимации. */
+export function drawVectorRippleStatic(
   ctx: CanvasRenderingContext2D,
   pathAt: (gen: number) => Path2D | null,
   ringCount: number,
-  phase: number,
   drawStyle: RippleDrawStyle,
   ringFillForGen: (outerGen: number) => string | null,
   strokeForGen: ((gen: number) => string) | null,
   lineWidth: number,
   alpha: number,
-  stepShift: { x: number; y: number },
 ) {
   if (ringCount < 1) return;
 
-  const { slots, frac } = rippleScrollSlots(ringCount, phase);
-  const dx = stepShift.x * frac;
-  const dy = stepShift.y * frac;
+  const slots: RippleSlot[] = [];
+  for (let slot = 0; slot < ringCount; slot++) {
+    slots.push({ innerGen: slot, outerGen: slot + 1 });
+  }
 
   const order =
     drawStyle === 'solid'
@@ -400,13 +384,13 @@ export function drawVectorRippleCarousel(
     if (!outer || !fill) continue;
 
     if (drawStyle === 'solid') {
-      fillSolidPath2D(ctx, outer, dx, dy, fill, alpha);
+      fillSolidPath2D(ctx, outer, 0, 0, fill, alpha);
       continue;
     }
 
     const inner = pathAt(innerGen);
     if (!inner) continue;
-    fillRingPath2D(ctx, outer, inner, dx, dy, fill, alpha);
+    fillRingPath2D(ctx, outer, inner, 0, 0, fill, alpha);
   }
 
   if (!strokeForGen || drawStyle !== 'ring') return;
@@ -414,7 +398,7 @@ export function drawVectorRippleCarousel(
   for (const { outerGen } of slots) {
     const outer = pathAt(outerGen);
     if (!outer) continue;
-    strokePath2D(ctx, outer, dx, dy, strokeForGen(outerGen), lineWidth, alpha);
+    strokePath2D(ctx, outer, 0, 0, strokeForGen(outerGen), lineWidth, alpha);
   }
 }
 
