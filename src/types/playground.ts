@@ -29,19 +29,30 @@ export const LAB_MODES: LabModeDefinition[] = [
   { id: 'softBody', label: 'Вихрь', shortLabel: 'Вихрь' },
 ];
 
-/** Вложенные контуры: каждый следующий — расширение предыдущего. */
+/** Равномерный шаг между копиями или нарастающий (stagger, как в Cavalry). */
+export type RippleSpacingMode = 'uniform' | 'accelerate';
+
+/** Резкость контура: везде одинаково или плавнее у текста. */
+export type RippleEdgeMode = 'uniform' | 'smoothNearText';
+
+/** Ripple: цепочка Offset Path (Shapeₙ = Smooth(Offset(Shapeₙ₋₁))). */
 export interface ExpansionSettings {
-  /** расстояние между контурами (px) */
+  /** базовый шаг между поколениями (px) */
   ringSpacing: number;
-  /** число контуров (включая букву) */
+  /** сколько колец видно одновременно (окно потока) */
   contourCount: number;
   strokeWidth: number;
+  /** скорость бесконечного потока */
   growSpeed: number;
   strokeColor: string;
-  /** шаг расширения относительно «Шаг волн» */
+  /** множитель шага offset */
   offsetScale: number;
-  /** сглаживание на каждом шаге (0…1) */
+  /** 0 = зигзаг, 1 = плавные линии */
   waveFlatten: number;
+  spacingMode: RippleSpacingMode;
+  /** для accelerate: насколько растёт шаг с каждой копией (0…1) */
+  spacingSpread: number;
+  edgeMode: RippleEdgeMode;
 }
 
 /** Залитые смещённые копии (объём). */
@@ -149,12 +160,15 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
   forceUppercase: false,
   expansion: {
     ringSpacing: 4,
-    contourCount: 32,
+    contourCount: 40,
     strokeWidth: 1,
-    growSpeed: 0.45,
+    growSpeed: 0.55,
     strokeColor: 'auto',
     offsetScale: 1,
-    waveFlatten: 0.5,
+    waveFlatten: 0.55,
+    spacingMode: 'uniform',
+    spacingSpread: 0.08,
+    edgeMode: 'smoothNearText',
   },
   colorStack: {
     duplicateCount: 28,

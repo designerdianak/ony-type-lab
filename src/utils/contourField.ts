@@ -3,6 +3,92 @@ import { fillGlyphPath } from './opentypeCanvas';
 
 export type GlyphSlot = { char: string; x: number; bl: number };
 
+export type LocalGlyphRaster = {
+  mask: Uint8Array;
+  cw: number;
+  ch: number;
+  cell: number;
+  /** Левый верх локальной сетки в координатах холста (px). */
+  originX: number;
+  originY: number;
+};
+
+/** Маска одной буквы в локальной сетке (изолированно от соседних). */
+export function rasterizeGlyphLocal(
+  lay: GlyphSlot,
+  cell: number,
+  fontSize: number,
+  font: opentype.Font | null,
+  fontCss: string,
+  padPx: number,
+): LocalGlyphRaster | null {
+  const dpr = Math.min(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1, 2);
+  const pad = Math.max(cell * 2, padPx);
+  const lx = pad;
+  let ly = pad + fontSize * 0.72;
+  let localW = fontSize + pad * 2;
+  let localH = fontSize * 1.1 + pad * 2;
+
+  if (font) {
+    const path = font.getPath(lay.char, lx, ly, fontSize);
+    const bb = path.getBoundingBox();
+    localW = Math.max(cell * 4, bb.x2 - bb.x1 + pad * 2);
+    localH = Math.max(cell * 4, bb.y2 - bb.y1 + pad * 2);
+  } else {
+    const probe = document.createElement('canvas').getContext('2d');
+    if (!probe) return null;
+    probe.font = fontCss;
+    probe.textBaseline = 'alphabetic';
+    const m = probe.measureText(lay.char);
+    const asc = m.actualBoundingBoxAscent > 0 ? m.actualBoundingBoxAscent : fontSize * 0.72;
+    const desc = m.actualBoundingBoxDescent > 0 ? m.actualBoundingBoxDescent : fontSize * 0.22;
+    ly = pad + asc;
+    localW = Math.max(cell * 4, (m.width || fontSize * 0.5) + pad * 2);
+    localH = Math.max(cell * 4, asc + desc + pad * 2);
+  }
+  const cw = Math.max(1, Math.ceil(localW / cell));
+  const ch = Math.max(1, Math.ceil(localH / cell));
+  const mask = new Uint8Array(cw * ch);
+
+  const pw = Math.max(1, Math.floor(cw * cell * dpr));
+  const ph = Math.max(1, Math.floor(ch * cell * dpr));
+  const off = document.createElement('canvas');
+  off.width = pw;
+  off.height = ph;
+  const octx = off.getContext('2d');
+  if (!octx) return null;
+
+  octx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  octx.fillStyle = '#ffffff';
+  if (font) {
+    fillGlyphPath(octx, font.getPath(lay.char, lx, ly, fontSize), '#ffffff');
+  } else {
+    octx.font = fontCss;
+    octx.textBaseline = 'alphabetic';
+    octx.fillText(lay.char, lx, ly);
+  }
+
+  octx.setTransform(1, 0, 0, 1, 0, 0);
+  const img = octx.getImageData(0, 0, pw, ph).data;
+  for (let gy = 0; gy < ch; gy++) {
+    for (let gx = 0; gx < cw; gx++) {
+      const px = Math.min(pw - 1, Math.floor((gx + 0.5) * cell * dpr));
+      const py = Math.min(ph - 1, Math.floor((gy + 0.5) * cell * dpr));
+      const i = (py * pw + px) * 4;
+      if (img[i + 3]! > 48) mask[gy * cw + gx] = 1;
+    }
+  }
+
+  return {
+    mask,
+    cw,
+    ch,
+    cell,
+    originX: lay.x - lx,
+    originY: lay.bl - ly,
+  };
+}
+
 /** Маска глифов (1 = внутри буквы) на сетке. */
 export function rasterizeGlyphMask(
   w: number,

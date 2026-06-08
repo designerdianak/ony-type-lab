@@ -25,7 +25,7 @@ const DEFAULT_WEIGHT =
 function modeHint(mode: LabModeId): string {
   switch (mode) {
     case 'expansion':
-      return 'Контур буквы → offset → offset… Каждая волна повторяет предыдущую; текст — только обводка';
+      return 'Один контур слова → копия → копия… Слои как в референсе; копии и расстояние — в слайдерах';
     case 'colorStack':
       return 'Залитые копии со смещением — имитация объёма';
     case 'bloom':
@@ -294,7 +294,31 @@ export default function App() {
         <div className="lab__section-title">Режим</div>
         <div className="lab__row">
           {LAB_MODES.map((m) => (
-            <RoundButton key={m.id} active={mode === m.id} onClick={() => setMode(m.id)}>
+            <RoundButton
+              key={m.id}
+              active={mode === m.id}
+              onClick={() => {
+                setMode(m.id);
+                if (m.id === 'expansion') {
+                  setVisual((v) => ({
+                    ...v,
+                    stageBackground: '#000000',
+                    monochromeColor: '#ffffff',
+                    colorMode: 'monochrome',
+                    expansion: {
+                      ...v.expansion,
+                      strokeWidth: 1,
+                      ringSpacing: 4,
+                      waveFlatten: 0.55,
+                      spacingMode: 'uniform',
+                      spacingSpread: 0.08,
+                      edgeMode: 'smoothNearText',
+                      growSpeed: 0.55,
+                    },
+                  }));
+                }
+              }}
+            >
               {m.shortLabel}
             </RoundButton>
           ))}
@@ -304,9 +328,9 @@ export default function App() {
           <>
             <div className="lab__section-title">Ripple</div>
             <LabeledSlider
-              label="Копии"
+              label="Колец в потоке"
               min={4}
-              max={120}
+              max={150}
               freeInput
               value={expansion.contourCount}
               onChange={(v) =>
@@ -324,6 +348,46 @@ export default function App() {
               value={expansion.ringSpacing}
               onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, ringSpacing: v } }))}
             />
+            <div className="lab__field">
+              <span>Шаг между копиями</span>
+              <div className="lab__row">
+                <RoundButton
+                  active={expansion.spacingMode === 'uniform'}
+                  onClick={() =>
+                    setVisual((s) => ({
+                      ...s,
+                      expansion: { ...s.expansion, spacingMode: 'uniform' },
+                    }))
+                  }
+                >
+                  Равномерно
+                </RoundButton>
+                <RoundButton
+                  active={expansion.spacingMode === 'accelerate'}
+                  onClick={() =>
+                    setVisual((s) => ({
+                      ...s,
+                      expansion: { ...s.expansion, spacingMode: 'accelerate' },
+                    }))
+                  }
+                >
+                  Нарастающий
+                </RoundButton>
+              </div>
+            </div>
+            {expansion.spacingMode === 'accelerate' && (
+              <LabeledSlider
+                label="Разброс шага"
+                min={0}
+                max={0.35}
+                step={0.01}
+                value={expansion.spacingSpread}
+                format={(n) => n.toFixed(2)}
+                onChange={(v) =>
+                  setVisual((s) => ({ ...s, expansion: { ...s.expansion, spacingSpread: v } }))
+                }
+              />
+            )}
             <LabeledSlider
               label="Толщина линии"
               min={0.2}
@@ -334,7 +398,7 @@ export default function App() {
               onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, strokeWidth: v } }))}
             />
             <LabeledSlider
-              label="Скорость роста"
+              label="Скорость потока"
               min={0}
               max={3}
               step={0.05}
@@ -344,7 +408,7 @@ export default function App() {
               onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, growSpeed: v } }))}
             />
             <LabeledSlider
-              label="Сглаживание волн"
+              label="Сглаживание"
               min={0}
               max={1}
               step={0.02}
@@ -352,6 +416,33 @@ export default function App() {
               format={(n) => n.toFixed(2)}
               onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, waveFlatten: v } }))}
             />
+            <div className="lab__field">
+              <span>Детализация линий</span>
+              <div className="lab__row">
+                <RoundButton
+                  active={expansion.edgeMode === 'uniform'}
+                  onClick={() =>
+                    setVisual((s) => ({
+                      ...s,
+                      expansion: { ...s.expansion, edgeMode: 'uniform' },
+                    }))
+                  }
+                >
+                  Резкость везде
+                </RoundButton>
+                <RoundButton
+                  active={expansion.edgeMode === 'smoothNearText'}
+                  onClick={() =>
+                    setVisual((s) => ({
+                      ...s,
+                      expansion: { ...s.expansion, edgeMode: 'smoothNearText' },
+                    }))
+                  }
+                >
+                  У текста плавнее
+                </RoundButton>
+              </div>
+            </div>
             <div className="lab__field lab__field--row">
               <label htmlFor="exp-stroke">Цвет контура</label>
               <input
