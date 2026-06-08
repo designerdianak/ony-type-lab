@@ -262,19 +262,9 @@ export function pathsToPath2D(paths: Paths): Path2D {
   return p;
 }
 
-function withGrowthTransform(
-  ctx: CanvasRenderingContext2D,
-  cx: number,
-  cy: number,
-  growth: number,
-  draw: () => void,
-) {
+function withTranslate(ctx: CanvasRenderingContext2D, dx: number, dy: number, draw: () => void) {
   ctx.save();
-  if (Math.abs(growth - 1) > 0.0005) {
-    ctx.translate(cx, cy);
-    ctx.scale(growth, growth);
-    ctx.translate(-cx, -cy);
-  }
+  if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) ctx.translate(dx, dy);
   draw();
   ctx.restore();
 }
@@ -283,16 +273,15 @@ function fillRingPath2D(
   ctx: CanvasRenderingContext2D,
   outer: Path2D,
   inner: Path2D,
-  cx: number,
-  cy: number,
-  growth: number,
+  dx: number,
+  dy: number,
   fill: string | null,
   alpha: number,
 ) {
   if (!fill) return;
   ctx.save();
   ctx.globalAlpha = alpha;
-  withGrowthTransform(ctx, cx, cy, growth, () => {
+  withTranslate(ctx, dx, dy, () => {
     ctx.fillStyle = fill;
     ctx.fill(outer, 'evenodd');
     ctx.globalCompositeOperation = 'destination-out';
@@ -305,16 +294,15 @@ function fillRingPath2D(
 function fillSolidPath2D(
   ctx: CanvasRenderingContext2D,
   path: Path2D,
-  cx: number,
-  cy: number,
-  growth: number,
+  dx: number,
+  dy: number,
   fill: string,
   alpha: number,
 ) {
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.fillStyle = fill;
-  withGrowthTransform(ctx, cx, cy, growth, () => {
+  withTranslate(ctx, dx, dy, () => {
     ctx.fill(path, 'evenodd');
   });
   ctx.restore();
@@ -323,9 +311,8 @@ function fillSolidPath2D(
 function strokePath2D(
   ctx: CanvasRenderingContext2D,
   path: Path2D,
-  cx: number,
-  cy: number,
-  growth: number,
+  dx: number,
+  dy: number,
   stroke: string,
   lineWidth: number,
   alpha: number,
@@ -336,23 +323,17 @@ function strokePath2D(
   ctx.lineWidth = lineWidth;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
-  withGrowthTransform(ctx, cx, cy, growth, () => {
+  withTranslate(ctx, dx, dy, () => {
     ctx.stroke(path);
   });
   ctx.restore();
 }
 
-/** Плавное появление слоя: от размера gen−1 к полному gen. */
-function rippleEmergenceGrowth(
-  gen: number,
-  frac: number,
-  radiusAt: (gen: number) => number,
-): number {
-  const rOut = Math.max(1, radiusAt(gen));
-  const rIn = Math.max(1, radiusAt(gen - 1));
-  const minScale = rIn / rOut;
-  if (frac < 0.0005) return minScale;
-  return minScale + frac * (1 - minScale);
+/** Плавное затухание на стыке цикла — убирает рывок при wrap. */
+function flowLayerOpacity(frac: number, edge = 0.14): number {
+  if (frac < edge) return frac / edge;
+  if (frac > 1 - edge) return (1 - frac) / edge;
+  return 1;
 }
 
 function fillRingPaths(
@@ -363,7 +344,7 @@ function fillRingPaths(
   alpha: number,
 ) {
   if (!fill || outer.length === 0) return;
-  fillRingPath2D(ctx, pathsToPath2D(outer), pathsToPath2D(inner), 0, 0, 1, fill, alpha);
+  fillRingPath2D(ctx, pathsToPath2D(outer), pathsToPath2D(inner), 0, 0, fill, alpha);
 }
 
 function strokePaths(
@@ -374,69 +355,92 @@ function strokePaths(
   alpha: number,
 ) {
   if (paths.length === 0) return;
-  strokePath2D(ctx, pathsToPath2D(paths), 0, 0, 1, stroke, lineWidth, alpha);
+  strokePath2D(ctx, pathsToPath2D(paths), 0, 0, stroke, lineWidth, alpha);
 }
 
 export type RippleDrawStyle = 'ring' | 'solid';
 
-/** Фаза роста для gen-го слоя — волна бежит от центра наружу. */
-function staggeredFrac(phase: number, gen: number, ringCount: number): number {
-  const t = phase - (gen - 1) / ringCount;
+const SHELL_GEN = 1;
+
+/** Фаза сдвига для gen-го слоя (волна от оболочки наружу). */
+function flowFrac(phase: number, gen: number, flowCount: number): number {
+  const t = phase - (gen - SHELL_GEN) / flowCount;
   return t - Math.floor(t);
 }
 
 /**
- * Поток offset-слоёв: поколения 1…count зафиксированы в пространстве,
- * волна роста смещена по gen (как Cavalry duplicator + stagger).
- * solid — сплошная заливка силуэта; ring — кольцо + опционально обводка.
+ * Поток offset-слоёв:
+ * — gen=1: зафиксированная оболочка у текста (без сдвига);
+ * — gen≥2: плавный translate + fade (без scale).
  */
 export function drawVectorRippleCarousel(
   ctx: CanvasRenderingContext2D,
   pathAt: (gen: number) => Path2D | null,
-  radiusAt: (gen: number) => number,
   ringCount: number,
   phase: number,
-  center: { cx: number; cy: number },
   drawStyle: RippleDrawStyle,
   ringFillForGen: (outerGen: number) => string | null,
   strokeForGen: ((gen: number) => string) | null,
   lineWidth: number,
   alpha: number,
+  stepShift: { x: number; y: number },
 ) {
   if (ringCount < 1) return;
 
-  const drawOrder =
-    drawStyle === 'solid'
-      ? Array.from({ length: ringCount }, (_, i) => ringCount - i)
-      : Array.from({ length: ringCount }, (_, i) => i + 1);
+  const flowCount = Math.max(1, ringCount);
+  const shellOuter = pathAt(SHELL_GEN);
+  const shellInner = pathAt(0);
+  const shellFill = ringFillForGen(SHELL_GEN);
 
-  for (const gen of drawOrder) {
+  const drawFlowLayer = (gen: number, layerAlpha: number) => {
     const outer = pathAt(gen);
     const fill = ringFillForGen(gen);
-    if (!outer || !fill) continue;
+    if (!outer || !fill) return;
 
-    const frac = staggeredFrac(phase, gen, ringCount);
-    const growth = rippleEmergenceGrowth(gen, frac, radiusAt);
+    const frac = flowFrac(phase, gen, flowCount);
+    const fade = gen === SHELL_GEN ? 1 : flowLayerOpacity(frac);
+    const a = alpha * layerAlpha * fade;
+    const dx = stepShift.x * frac;
+    const dy = stepShift.y * frac;
 
     if (drawStyle === 'solid') {
-      fillSolidPath2D(ctx, outer, center.cx, center.cy, growth, fill, alpha);
-      continue;
+      fillSolidPath2D(ctx, outer, dx, dy, fill, a);
+      return;
     }
 
     const inner = pathAt(gen - 1);
-    if (!inner) continue;
-    fillRingPath2D(ctx, outer, inner, center.cx, center.cy, growth, fill, alpha);
-  }
+    if (!inner) return;
+    fillRingPath2D(ctx, outer, inner, dx, dy, fill, a);
+  };
 
-  if (!strokeForGen || drawStyle !== 'ring') return;
-
-  for (let gen = 1; gen <= ringCount; gen++) {
+  const drawStroke = (gen: number, layerAlpha: number) => {
+    if (!strokeForGen) return;
     const outer = pathAt(gen);
-    if (!outer) continue;
-    const frac = staggeredFrac(phase, gen, ringCount);
-    const growth = rippleEmergenceGrowth(gen, frac, radiusAt);
-    strokePath2D(ctx, outer, center.cx, center.cy, growth, strokeForGen(gen), lineWidth, alpha);
+    if (!outer) return;
+    const frac = gen === SHELL_GEN ? 0 : flowFrac(phase, gen, flowCount);
+    const fade = gen === SHELL_GEN ? 1 : flowLayerOpacity(frac);
+    const a = alpha * layerAlpha * fade;
+    const dx = stepShift.x * frac;
+    const dy = stepShift.y * frac;
+    strokePath2D(ctx, outer, dx, dy, strokeForGen(gen), lineWidth, a);
+  };
+
+  if (drawStyle === 'solid') {
+    for (let gen = ringCount; gen > SHELL_GEN; gen--) drawFlowLayer(gen, 1);
+    if (shellOuter && shellFill) {
+      fillSolidPath2D(ctx, shellOuter, 0, 0, shellFill, alpha);
+    }
+    return;
   }
+
+  for (let gen = SHELL_GEN + 1; gen <= ringCount; gen++) drawFlowLayer(gen, 1);
+  if (shellOuter && shellInner && shellFill) {
+    fillRingPath2D(ctx, shellOuter, shellInner, 0, 0, shellFill, alpha);
+  }
+
+  if (!strokeForGen) return;
+  for (let gen = SHELL_GEN + 1; gen <= ringCount; gen++) drawStroke(gen, 1);
+  drawStroke(SHELL_GEN, 1);
 }
 
 /**

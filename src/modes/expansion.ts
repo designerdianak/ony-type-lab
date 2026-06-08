@@ -259,6 +259,15 @@ export function createExpansionMode(
     return parts.join(',');
   }
 
+  function flowStepShift(exp: ExpansionSettings, w: number, h: number, count: number) {
+    const mag = baseStepPx(w, h, count) * 0.2;
+    const bx = exp.horizontalBias;
+    const by = exp.verticalBias;
+    const len = Math.hypot(bx, by);
+    if (len < 0.02) return { x: 0, y: mag * 0.4 };
+    return { x: (bx / len) * mag, y: (by / len) * mag };
+  }
+
   function ringFillForGen(
     exp: ExpansionSettings,
     outerGen: number,
@@ -284,9 +293,11 @@ export function createExpansionMode(
     h: number,
     frozen: boolean,
   ) {
-    const phaseKey = frozen ? '0' : phase.toFixed(3);
+    const phaseKey = frozen ? '0' : phase.toFixed(4);
     const key = `${phaseKey}|${count}|${topGen}|${lw}|${alpha}|${colorSig(exp, count)}`;
-    if (layerReady && key === layerKey && effectLayer.width === w && effectLayer.height === h) return;
+    if (frozen && layerReady && key === layerKey && effectLayer.width === w && effectLayer.height === h) {
+      return;
+    }
     if (!effectCtx) return;
 
     layerKey = key;
@@ -303,15 +314,14 @@ export function createExpansionMode(
     drawVectorRippleCarousel(
       effectCtx,
       (g) => path2DCache.get(g) ?? null,
-      (g) => radiusCache.get(g) ?? 1,
       visibleRings,
       phase,
-      shapeCenter,
       drawStyle,
       (g) => ringFillForGen(exp, g, stageBg),
       useStrokes ? () => rippleStrokeColor(exp) : null,
       lw,
       alpha,
+      flowStepShift(exp, w, h, count),
     );
   }
 
@@ -348,7 +358,7 @@ export function createExpansionMode(
       let phase = 0;
       const animating = !s.visual.sceneFrozen && tabVisible && topGen >= count;
       if (animating) {
-        flowPhase += RIPPLE_FLOW_SPEED * 6 * (gsap.ticker.deltaRatio() / 60);
+        flowPhase += RIPPLE_FLOW_SPEED * 2.2 * (gsap.ticker.deltaRatio() / 60);
         phase = flowPhase;
       }
 
