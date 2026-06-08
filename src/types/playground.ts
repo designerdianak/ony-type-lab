@@ -108,6 +108,8 @@ export interface ElasticSettings {
   flowSpeed: number;
   trailGradientMode: ElasticTrailGradientMode;
   randomGradient: boolean;
+  /** Плавный шлейф: минимум 2, равномерная растяжка между соседними. */
+  smoothColors: string[];
   colorA: string;
   colorB: string;
   colorC: string;
@@ -232,6 +234,7 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
     flowSpeed: 0.45,
     trailGradientMode: 'striped',
     randomGradient: true,
+    smoothColors: ['#ff2bd6', '#6b2cff'],
     colorA: '#ff2bd6',
     colorB: '#6b2cff',
     colorC: '#00c8ff',

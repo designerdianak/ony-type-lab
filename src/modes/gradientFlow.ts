@@ -59,10 +59,6 @@ export function createGradientFlowMode(
 
   const trailLayer = document.createElement('canvas');
   const trailCtx = trailLayer.getContext('2d');
-  const maskLayer = document.createElement('canvas');
-  const maskCtx = maskLayer.getContext('2d');
-  const gradLayer = document.createElement('canvas');
-  const gradCtx = gradLayer.getContext('2d');
   let trailKey = '';
   let trailReady = false;
 
@@ -78,6 +74,13 @@ export function createGradientFlowMode(
       return randomVividPalette(rng() * 1000, 6);
     }
     return [e.colorA, e.colorB, e.colorC];
+  }
+
+  function smoothPalette(s: ModeSnapshot): string[] {
+    const e = s.visual.elastic;
+    const custom = e.smoothColors;
+    if (custom && custom.length >= 2) return custom;
+    return [e.colorA, e.colorB];
   }
 
   function rebuildLines(s: ModeSnapshot) {
@@ -121,6 +124,7 @@ export function createGradientFlowMode(
       e.flowSpeed,
       e.trailGradientMode ?? 'striped',
       e.randomGradient,
+      (e.smoothColors ?? []).join(','),
       e.colorA,
       e.colorB,
       e.colorC,
@@ -184,8 +188,9 @@ export function createGradientFlowMode(
     return Math.max(28, Math.round(e.flowLength * 2.8));
   }
 
-  /** Плотнее слои — силуэт сливается в сплошной шлейф. */
-  function denseTrailParams(layers: number, tx: number, ty: number, density = 8) {
+  const SMOOTH_DENSITY = 14;
+
+  function denseTrailParams(layers: number, tx: number, ty: number, density: number) {
     return {
       layers: layers * density,
       tx: tx / density,
@@ -193,62 +198,16 @@ export function createGradientFlowMode(
     };
   }
 
-  function capLayersForCanvas(
-    cx: number,
-    cy: number,
-    tx: number,
-    ty: number,
-    layers: number,
-    w: number,
-    h: number,
-  ): number {
-    const pad = 4;
-    for (let i = layers; i >= 1; i--) {
-      const px = cx + tx * i;
-      const py = cy + ty * i;
-      if (px >= pad && px <= w - pad && py >= pad && py <= h - pad) {
-        return i;
-      }
-    }
-    return 1;
-  }
-
-  function smoothGradientLine(
-    target: CanvasRenderingContext2D,
-    s: ModeSnapshot,
-    ax: number,
-    ay: number,
-    bx: number,
-    by: number,
-    phase: number,
-  ): CanvasGradient {
+  /** Цвет по глубине шлейфа (0 = у текста, 1 = хвост). */
+  function smoothTrailColor(s: ModeSnapshot, t: number): string {
     const e = s.visual.elastic;
-    const len = Math.hypot(bx - ax, by - ay) || 1;
-    const ux = (bx - ax) / len;
-    const uy = (by - ay) / len;
-    const shift = phase * len;
-    const grad = target.createLinearGradient(
-      ax + ux * shift,
-      ay + uy * shift,
-      bx + ux * shift,
-      by + uy * shift,
-    );
-
-    if (e.randomGradient) {
-      const pal = palette(s);
-      grad.addColorStop(0, pal[0]!);
-      grad.addColorStop(1, pal[pal.length - 1]!);
-    } else if (s.visual.colorMode === 'rainbow') {
-      const base = s.visual.rainbowSeed * 41 + phase * 360;
-      grad.addColorStop(0, hsla(base, 90, 54, 1));
-      grad.addColorStop(0.35, hsla(base + 70, 90, 54, 1));
-      grad.addColorStop(0.65, hsla(base + 170, 90, 54, 1));
-      grad.addColorStop(1, hsla(base + 260, 90, 54, 1));
-    } else {
-      grad.addColorStop(0, e.colorA);
-      grad.addColorStop(1, e.colorB);
+    const u = t - Math.floor(t);
+    if (e.randomGradient) return gradientAt(palette(s), u);
+    if (s.visual.colorMode === 'rainbow') {
+      const h = (s.visual.rainbowSeed * 41 + u * 360) % 360;
+      return hsla(h, 90, 54, 1);
     }
-    return grad;
+    return gradientAt(smoothPalette(s), u);
   }
 
   function setupSurface(layer: HTMLCanvasElement, layerCtx: CanvasRenderingContext2D, w: number, h: number) {
@@ -278,15 +237,12 @@ export function createGradientFlowMode(
     layers: number,
     tx: number,
     ty: number,
-    w: number,
-    h: number,
   ) {
     const bands = Math.max(6, Math.min(28, Math.round(layers / 3)));
 
     for (const line of lines) {
-      const capped = capLayersForCanvas(line.anchor.cx, line.anchor.cy, tx, ty, layers, w, h);
-      for (let i = capped; i >= 1; i--) {
-        const depth = i / capped;
+      for (let i = layers; i >= 1; i--) {
+        const depth = i / layers;
         const tRaw = (depth + phase) % 1;
         const t = Math.floor(tRaw * bands) / bands;
         const fill = trailColorAt(s, t);
@@ -312,15 +268,9 @@ export function createGradientFlowMode(
     w: number,
     h: number,
   ) {
-    if (!maskCtx || !gradCtx || !trailCtx) return;
+    if (!trailCtx) return;
 
-    const dpr = canvasDpr(w, ctx.canvas);
-    const pw = Math.max(1, Math.round(w * dpr));
-    const ph = Math.max(1, Math.round(h * dpr));
-    if (maskLayer.width !== pw) maskLayer.width = pw;
-    if (maskLayer.height !== ph) maskLayer.height = ph;
-    if (gradLayer.width !== pw) gradLayer.width = pw;
-    if (gradLayer.height !== ph) gradLayer.height = ph;
+    const { layers, tx, ty } = denseTrailParams(baseLayers, baseTx, baseTy, SMOOTH_DENSITY);
 
     trailCtx.save();
     trailCtx.beginPath();
@@ -328,51 +278,18 @@ export function createGradientFlowMode(
     trailCtx.clip();
 
     for (const line of lines) {
-      const capped = capLayersForCanvas(
-        line.anchor.cx,
-        line.anchor.cy,
-        baseTx,
-        baseTy,
-        baseLayers,
-        w,
-        h,
-      );
-      const { layers, tx, ty } = denseTrailParams(capped, baseTx, baseTy);
+      for (let i = layers; i >= 1; i--) {
+        const t = i / layers + phase;
+        const fill = smoothTrailColor(s, t);
 
-      setupSurface(maskLayer, maskCtx, w, h);
-      maskCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      maskCtx.clearRect(0, 0, w, h);
-      maskCtx.fillStyle = '#fff';
-      for (let i = 1; i <= layers; i++) {
-        maskCtx.save();
-        maskCtx.translate(line.anchor.cx + tx * i, line.anchor.cy + ty * i);
-        maskCtx.translate(-line.anchor.cx, -line.anchor.cy);
-        maskCtx.fill(line.path2D, 'evenodd');
-        maskCtx.restore();
+        trailCtx.save();
+        trailCtx.globalAlpha = alpha;
+        trailCtx.fillStyle = fill;
+        trailCtx.translate(line.anchor.cx + tx * i, line.anchor.cy + ty * i);
+        trailCtx.translate(-line.anchor.cx, -line.anchor.cy);
+        trailCtx.fill(line.path2D, 'evenodd');
+        trailCtx.restore();
       }
-
-      const ax = line.anchor.cx * dpr;
-      const ay = line.anchor.cy * dpr;
-      const bx = (line.anchor.cx + baseTx * capped) * dpr;
-      const by = (line.anchor.cy + baseTy * capped) * dpr;
-
-      gradCtx.setTransform(1, 0, 0, 1, 0, 0);
-      if (gradLayer.width !== pw) gradLayer.width = pw;
-      if (gradLayer.height !== ph) gradLayer.height = ph;
-      gradCtx.clearRect(0, 0, pw, ph);
-
-      const grad = smoothGradientLine(gradCtx, s, ax, ay, bx, by, phase);
-      gradCtx.fillStyle = grad;
-      gradCtx.fillRect(0, 0, pw, ph);
-      gradCtx.globalCompositeOperation = 'destination-in';
-      gradCtx.drawImage(maskLayer, 0, 0);
-      gradCtx.globalCompositeOperation = 'source-over';
-
-      trailCtx.save();
-      trailCtx.setTransform(1, 0, 0, 1, 0, 0);
-      trailCtx.globalAlpha = alpha;
-      trailCtx.drawImage(gradLayer, 0, 0, pw, ph, 0, 0, pw, ph);
-      trailCtx.restore();
     }
 
     trailCtx.restore();
@@ -405,7 +322,7 @@ export function createGradientFlowMode(
       trailCtx.beginPath();
       trailCtx.rect(0, 0, w, h);
       trailCtx.clip();
-      paintTrailStriped(s, phase, alpha, layers, tx, ty, w, h);
+      paintTrailStriped(s, phase, alpha, layers, tx, ty);
       trailCtx.restore();
     }
   }
