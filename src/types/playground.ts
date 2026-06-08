@@ -29,36 +29,27 @@ export const LAB_MODES: LabModeDefinition[] = [
   { id: 'softBody', label: 'Вихрь', shortLabel: 'Вихрь' },
 ];
 
-/** Равномерный шаг между копиями или нарастающий (stagger, как в Cavalry). */
+/** Равномерный шаг между копиями или нарастающий (затухание / stagger). */
 export type RippleSpacingMode = 'uniform' | 'accelerate';
-
-/** Резкость контура: везде одинаково или плавнее у текста. */
-export type RippleEdgeMode = 'uniform' | 'smoothNearText';
 
 /** Два чередующихся цвета или пользовательская палитра. */
 export type RippleColorMode = 'dual' | 'custom';
 
-/** Ripple: цепочка Offset Path (Shapeₙ = Smooth(Offset(Shapeₙ₋₁))). */
+/** Ripple: бесконечный offset-поток от оболочки текста (Cavalry pathOffset + stagger). */
 export interface ExpansionSettings {
-  /** базовый шаг между поколениями (px) */
-  ringSpacing: number;
-  /** сколько колец видно одновременно (окно потока) */
+  /** количество копий в окне (2+); чем больше — тем плотнее полосы */
   contourCount: number;
-  /** скорость бесконечного потока */
-  growSpeed: number;
-  /** множитель шага offset */
-  offsetScale: number;
-  /** 0 = зигзаг, 1 = плавные линии */
-  waveFlatten: number;
   spacingMode: RippleSpacingMode;
-  /** для accelerate: насколько растёт шаг с каждой копией (0…1) */
+  /** сила затухания шага (accelerate): дальше от текста — шире offset */
   spacingSpread: number;
-  edgeMode: RippleEdgeMode;
   rippleColorMode: RippleColorMode;
   colorA: string;
   colorB: string;
-  /** порядок чередования в режиме custom */
   customColors: string[];
+  /** −1…1: смещение роста потока по горизонтали (0 = от центра) */
+  flowBiasX: number;
+  /** −1…1: смещение роста потока по вертикали */
+  flowBiasY: number;
 }
 
 /** Залитые смещённые копии (объём). */
@@ -165,18 +156,15 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
   effectOpacity: 1,
   forceUppercase: false,
   expansion: {
-    ringSpacing: 4,
-    contourCount: 40,
-    growSpeed: 0.55,
-    offsetScale: 1,
-    waveFlatten: 0.55,
+    contourCount: 24,
     spacingMode: 'uniform',
-    spacingSpread: 0.08,
-    edgeMode: 'smoothNearText',
+    spacingSpread: 0.12,
     rippleColorMode: 'dual',
     colorA: '#ffffff',
     colorB: '#ff2bd6',
-    customColors: ['#ffffff', '#ff2bd6', '#00e5ff'],
+    customColors: ['#ffffff', '#ff2bd6'],
+    flowBiasX: 0,
+    flowBiasY: 0,
   },
   colorStack: {
     duplicateCount: 28,
