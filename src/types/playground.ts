@@ -29,27 +29,30 @@ export const LAB_MODES: LabModeDefinition[] = [
   { id: 'softBody', label: 'Вихрь', shortLabel: 'Вихрь' },
 ];
 
-/** Равномерный шаг между копиями или нарастающий (затухание / stagger). */
-export type RippleSpacingMode = 'uniform' | 'accelerate';
+/** Равномерный шаг или falloff — дальше от текста, шире промежуток. */
+export type RippleDistribution = 'uniform' | 'falloff';
 
-/** Два чередующихся цвета или пользовательская палитра. */
-export type RippleColorMode = 'dual' | 'custom';
+/** Фон колец + один цвет обводки, или своя палитра обводок. */
+export type RipplePaletteMode = 'twoColors' | 'custom';
 
-/** Ripple: бесконечный offset-поток от оболочки текста (Cavalry pathOffset + stagger). */
+/**
+ * Ripple / Offset Path (Cavalry):
+ * Shapeₙ = Offset(Shapeₙ₋₁), кольца с заливкой фона + обводка, текст поверх.
+ */
 export interface ExpansionSettings {
-  /** количество копий в окне (2+); чем больше — тем плотнее полосы */
+  /** Count: 2+; больше — плотнее при том же радиусе */
   contourCount: number;
-  spacingMode: RippleSpacingMode;
-  /** сила затухания шага (accelerate): дальше от текста — шире offset */
-  spacingSpread: number;
-  rippleColorMode: RippleColorMode;
-  colorA: string;
-  colorB: string;
-  customColors: string[];
-  /** −1…1: смещение роста потока по горизонтали (0 = от центра) */
-  flowBiasX: number;
-  /** −1…1: смещение роста потока по вертикали */
-  flowBiasY: number;
+  distribution: RippleDistribution;
+  falloffStrength: number;
+  paletteMode: RipplePaletteMode;
+  /** заливка колец (перекрывает предыдущие обводки) */
+  fillColor: string;
+  /** обводка контуров (twoColors) */
+  strokeColor: string;
+  customPalette: string[];
+  horizontalBias: number;
+  verticalBias: number;
+  strokeWidth: number;
 }
 
 /** Залитые смещённые копии (объём). */
@@ -156,15 +159,16 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
   effectOpacity: 1,
   forceUppercase: false,
   expansion: {
-    contourCount: 24,
-    spacingMode: 'uniform',
-    spacingSpread: 0.12,
-    rippleColorMode: 'dual',
-    colorA: '#ffffff',
-    colorB: '#ff2bd6',
-    customColors: ['#ffffff', '#ff2bd6'],
-    flowBiasX: 0,
-    flowBiasY: 0,
+    contourCount: 28,
+    distribution: 'uniform',
+    falloffStrength: 0.1,
+    paletteMode: 'twoColors',
+    fillColor: '#fafaf9',
+    strokeColor: '#0a0a0a',
+    customPalette: ['#0a0a0a', '#e91e8c'],
+    horizontalBias: 0,
+    verticalBias: 0,
+    strokeWidth: 1,
   },
   colorStack: {
     duplicateCount: 28,

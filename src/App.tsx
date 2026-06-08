@@ -25,7 +25,7 @@ const DEFAULT_WEIGHT =
 function modeHint(mode: LabModeId): string {
   switch (mode) {
     case 'expansion':
-      return 'Offset-поток от текста за край экрана; анимация всегда включена';
+      return 'Offset Path: оболочки от текста, заливка + обводка, бесконечный поток';
     case 'colorStack':
       return 'Залитые копии со смещением — имитация объёма';
     case 'bloom':
@@ -303,26 +303,7 @@ export default function App() {
             <RoundButton
               key={m.id}
               active={mode === m.id}
-              onClick={() => {
-                setMode(m.id);
-                if (m.id === 'expansion') {
-                  setVisual((v) => ({
-                    ...v,
-                    stageBackground: '#000000',
-                    expansion: {
-                      ...v.expansion,
-                      contourCount: 24,
-                      spacingMode: 'uniform',
-                      spacingSpread: 0.12,
-                      rippleColorMode: 'dual',
-                      colorA: '#ffffff',
-                      colorB: '#ff2bd6',
-                      flowBiasX: 0,
-                      flowBiasY: 0,
-                    },
-                  }));
-                }
-              }}
+              onClick={() => setMode(m.id)}
             >
               {m.shortLabel}
             </RoundButton>
@@ -333,9 +314,9 @@ export default function App() {
           <>
             <div className="lab__section-title">Ripple</div>
             <LabeledSlider
-              label="Копий offset"
+              label="Count"
               min={2}
-              max={200}
+              max={160}
               freeInput
               value={expansion.contourCount}
               onChange={(v) =>
@@ -345,121 +326,132 @@ export default function App() {
                 }))
               }
             />
+            <LabeledSlider
+              label="Толщина обводки"
+              min={0.35}
+              max={3}
+              step={0.1}
+              freeInput
+              value={expansion.strokeWidth}
+              onChange={(v) =>
+                setVisual((s) => ({ ...s, expansion: { ...s.expansion, strokeWidth: v } }))
+              }
+            />
             <div className="lab__field">
-              <span>Шаг offset</span>
+              <span>Распределение</span>
               <div className="lab__row">
                 <RoundButton
-                  active={expansion.spacingMode === 'uniform'}
+                  active={expansion.distribution === 'uniform'}
                   onClick={() =>
                     setVisual((s) => ({
                       ...s,
-                      expansion: { ...s.expansion, spacingMode: 'uniform' },
+                      expansion: { ...s.expansion, distribution: 'uniform' },
                     }))
                   }
                 >
-                  Равномерный
+                  Uniform
                 </RoundButton>
                 <RoundButton
-                  active={expansion.spacingMode === 'accelerate'}
+                  active={expansion.distribution === 'falloff'}
                   onClick={() =>
                     setVisual((s) => ({
                       ...s,
-                      expansion: { ...s.expansion, spacingMode: 'accelerate' },
+                      expansion: { ...s.expansion, distribution: 'falloff' },
                     }))
                   }
                 >
-                  С затуханием
+                  Falloff
                 </RoundButton>
               </div>
             </div>
-            {expansion.spacingMode === 'accelerate' && (
+            {expansion.distribution === 'falloff' && (
               <LabeledSlider
-                label="Сила затухания"
+                label="Сила falloff"
                 min={0}
-                max={0.5}
+                max={0.45}
                 step={0.01}
-                value={expansion.spacingSpread}
+                value={expansion.falloffStrength}
                 format={(n) => n.toFixed(2)}
                 onChange={(v) =>
-                  setVisual((s) => ({ ...s, expansion: { ...s.expansion, spacingSpread: v } }))
+                  setVisual((s) => ({ ...s, expansion: { ...s.expansion, falloffStrength: v } }))
                 }
               />
             )}
             <LabeledSlider
-              label="Поток →"
+              label="Horizontal bias"
               min={-1}
               max={1}
               step={0.05}
-              value={expansion.flowBiasX}
+              value={expansion.horizontalBias}
               format={(n) => n.toFixed(2)}
               onChange={(v) =>
-                setVisual((s) => ({ ...s, expansion: { ...s.expansion, flowBiasX: v } }))
+                setVisual((s) => ({ ...s, expansion: { ...s.expansion, horizontalBias: v } }))
               }
             />
             <LabeledSlider
-              label="Поток ↓"
+              label="Vertical bias"
               min={-1}
               max={1}
               step={0.05}
-              value={expansion.flowBiasY}
+              value={expansion.verticalBias}
               format={(n) => n.toFixed(2)}
               onChange={(v) =>
-                setVisual((s) => ({ ...s, expansion: { ...s.expansion, flowBiasY: v } }))
+                setVisual((s) => ({ ...s, expansion: { ...s.expansion, verticalBias: v } }))
               }
             />
             <div className="lab__field">
-              <span>Цвета</span>
+              <span>Цвет</span>
               <div className="lab__row">
                 <RoundButton
-                  active={expansion.rippleColorMode === 'dual'}
+                  active={expansion.paletteMode === 'twoColors'}
                   onClick={() =>
                     setVisual((s) => ({
                       ...s,
-                      expansion: { ...s.expansion, rippleColorMode: 'dual' },
+                      expansion: { ...s.expansion, paletteMode: 'twoColors' },
                     }))
                   }
                 >
-                  2 цвета
+                  Two Colors
                 </RoundButton>
                 <RoundButton
-                  active={expansion.rippleColorMode === 'custom'}
+                  active={expansion.paletteMode === 'custom'}
                   onClick={() =>
                     setVisual((s) => ({
                       ...s,
-                      expansion: { ...s.expansion, rippleColorMode: 'custom' },
+                      expansion: { ...s.expansion, paletteMode: 'custom' },
                     }))
                   }
                 >
-                  Кастом
+                  Custom
                 </RoundButton>
               </div>
             </div>
-            {expansion.rippleColorMode === 'dual' ? (
+            {expansion.paletteMode === 'twoColors' ? (
               <>
                 <div className="lab__field lab__field--row">
-                  <label htmlFor="exp-color-a">Цвет 1</label>
+                  <label htmlFor="exp-fill">Фон колец</label>
                   <input
-                    id="exp-color-a"
+                    id="exp-fill"
                     type="color"
-                    value={expansion.colorA}
+                    value={expansion.fillColor}
                     onChange={(e) =>
                       setVisual((s) => ({
                         ...s,
-                        expansion: { ...s.expansion, colorA: e.target.value },
+                        expansion: { ...s.expansion, fillColor: e.target.value },
                       }))
                     }
                   />
                 </div>
                 <div className="lab__field lab__field--row">
-                  <label htmlFor="exp-color-b">Цвет 2</label>
+                  <label htmlFor="exp-stroke">Контуры</label>
                   <input
-                    id="exp-color-b"
+                    id="exp-stroke"
                     type="color"
-                    value={expansion.colorB}
+                    value={expansion.strokeColor}
                     onChange={(e) =>
                       setVisual((s) => ({
                         ...s,
-                        expansion: { ...s.expansion, colorB: e.target.value },
+                        expansion: { ...s.expansion, strokeColor: e.target.value },
                       }))
                     }
                   />
@@ -467,30 +459,30 @@ export default function App() {
               </>
             ) : (
               <>
-                {expansion.customColors.map((c, i) => (
+                {expansion.customPalette.map((c, i) => (
                   <div key={i} className="lab__field lab__field--row">
-                    <label htmlFor={`exp-custom-${i}`}>#{i + 1}</label>
+                    <label htmlFor={`exp-pal-${i}`}>#{i + 1}</label>
                     <input
-                      id={`exp-custom-${i}`}
+                      id={`exp-pal-${i}`}
                       type="color"
                       value={c}
                       onChange={(e) =>
                         setVisual((s) => {
-                          const next = [...s.expansion.customColors];
+                          const next = [...s.expansion.customPalette];
                           next[i] = e.target.value;
-                          return { ...s, expansion: { ...s.expansion, customColors: next } };
+                          return { ...s, expansion: { ...s.expansion, customPalette: next } };
                         })
                       }
                     />
                     <RoundButton
                       active={false}
-                      disabled={expansion.customColors.length <= 2}
+                      disabled={expansion.customPalette.length <= 2}
                       onClick={() =>
                         setVisual((s) => ({
                           ...s,
                           expansion: {
                             ...s.expansion,
-                            customColors: s.expansion.customColors.filter((_, j) => j !== i),
+                            customPalette: s.expansion.customPalette.filter((_, j) => j !== i),
                           },
                         }))
                       }
@@ -499,6 +491,20 @@ export default function App() {
                     </RoundButton>
                   </div>
                 ))}
+                <div className="lab__field lab__field--row">
+                  <label htmlFor="exp-fill-custom">Фон колец</label>
+                  <input
+                    id="exp-fill-custom"
+                    type="color"
+                    value={expansion.fillColor}
+                    onChange={(e) =>
+                      setVisual((s) => ({
+                        ...s,
+                        expansion: { ...s.expansion, fillColor: e.target.value },
+                      }))
+                    }
+                  />
+                </div>
                 <RoundButton
                   active={false}
                   onClick={() =>
@@ -506,7 +512,7 @@ export default function App() {
                       ...s,
                       expansion: {
                         ...s.expansion,
-                        customColors: [...s.expansion.customColors, '#ffffff'],
+                        customPalette: [...s.expansion.customPalette, '#0a0a0a'],
                       },
                     }))
                   }

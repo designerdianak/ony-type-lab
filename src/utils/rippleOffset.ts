@@ -1,64 +1,42 @@
-import type { ExpansionSettings, RippleSpacingMode } from '../types/playground';
+import type { ExpansionSettings, RippleDistribution } from '../types/playground';
 import { smoothBinaryMask } from './iterativeContours';
 
-/** Фиксированная скорость портала — не настраивается. */
-export const RIPPLE_FLOW_SPEED = 0.42;
+/** Скорость бесконечного потока — фиксирована. */
+export const RIPPLE_FLOW_SPEED = 0.4;
 
 const SMOOTH_PASSES = 2;
 const SMOOTH_THRESHOLD = 0.42;
-const BIAS_STRENGTH = 0.82;
+const BIAS_STRENGTH = 0.85;
 
-export function ripplePalette(exp: ExpansionSettings): string[] {
-  if (exp.rippleColorMode === 'custom') {
-    const cols = exp.customColors.filter((c) => c.length > 0);
-    if (cols.length >= 2) return cols;
-  }
-  return [exp.colorA, exp.colorB];
-}
-
-export function rippleColorAt(exp: ExpansionSettings, gen: number): string {
-  const pal = ripplePalette(exp);
-  return pal[(gen - 1) % pal.length]!;
-}
-
-/** Дальность потока до края экрана (с учётом смещения). */
-export function rippleScreenReach(
-  w: number,
-  h: number,
-  biasX: number,
-  biasY: number,
-): number {
-  const base = Math.max(w, h) * 0.56;
+/** Фиксированная дальность до края экрана (Count только уплотняет, не расширяет). */
+export function rippleReach(w: number, h: number, biasX: number, biasY: number): number {
+  const base = Math.max(w, h) * 0.55;
   const bias = Math.max(Math.abs(biasX), Math.abs(biasY));
-  return base * (1 + bias * 0.28);
+  return base * (1 + bias * 0.22);
 }
 
-/** Базовый шаг offset в ячейках: N копий делят дистанцию до края. */
-export function rippleBaseRadiusCells(
+export function rippleBaseStepCells(
   w: number,
   h: number,
-  copyCount: number,
+  count: number,
   cell: number,
   biasX: number,
   biasY: number,
 ): number {
-  const reach = rippleScreenReach(w, h, biasX, biasY);
-  const stepPx = reach / Math.max(2, copyCount);
+  const stepPx = rippleReach(w, h, biasX, biasY) / Math.max(2, count);
   return Math.max(1, stepPx / cell);
 }
 
-/** Радиус шага для поколения gen (равномерный / с затуханием). */
 export function rippleStepRadius(
   gen: number,
-  baseRadius: number,
-  mode: RippleSpacingMode,
-  spread: number,
+  base: number,
+  mode: RippleDistribution,
+  falloff: number,
 ): number {
-  if (mode === 'uniform') return baseRadius;
-  return baseRadius * (1 + gen * Math.max(0, spread));
+  if (mode === 'uniform') return base;
+  return base * (1 + gen * Math.max(0, falloff));
 }
 
-/** Эллиптический offset: bias смещает рост по осям (−1…1). */
 export function rippleEllipseRadii(
   radiusCells: number,
   biasX: number,
@@ -73,7 +51,6 @@ export function rippleEllipseRadii(
   };
 }
 
-/** Морфологический offset по эллипсу (Shapeₙ от Shapeₙ₋₁). */
 export function dilateEllipseInto(
   prev: Uint8Array,
   out: Uint8Array,
@@ -108,30 +85,27 @@ export function dilateEllipseInto(
   }
 }
 
-/**
- * Один шаг цепочки Cavalry: Offset(предыдущий) + лёгкий Smooth.
- * Каждая копия строится только от предыдущей формы.
- */
-export function expandRippleStepInto(
+/** Shapeₙ = Smooth(Offset(Shapeₙ₋₁)) — только от предыдущей оболочки. */
+export function offsetFromPrevInto(
   prev: Uint8Array,
   out: Uint8Array,
   gen: number,
   cw: number,
   ch: number,
   baseRadius: number,
-  spacingMode: RippleSpacingMode,
-  spacingSpread: number,
+  distribution: RippleDistribution,
+  falloff: number,
   biasX: number,
   biasY: number,
-  smoothBuf?: Uint8Array,
+  work?: Uint8Array,
 ): Uint8Array {
-  const r = rippleStepRadius(gen, baseRadius, spacingMode, spacingSpread);
+  const r = rippleStepRadius(gen, baseRadius, distribution, falloff);
   const { rx, ry } = rippleEllipseRadii(r, biasX, biasY);
   dilateEllipseInto(prev, out, cw, ch, rx, ry);
   const smoothed = smoothBinaryMask(out, cw, ch, SMOOTH_PASSES, SMOOTH_THRESHOLD);
-  if (smoothBuf && smoothBuf.length === out.length) {
-    smoothBuf.set(smoothed);
-    out.set(smoothBuf);
+  if (work && work.length === out.length) {
+    work.set(smoothed);
+    out.set(work);
     return out;
   }
   out.set(smoothed);
@@ -139,8 +113,8 @@ export function expandRippleStepInto(
 }
 
 export function rippleGridCell(stepPx: number, w: number, h: number): number {
-  const cell = Math.max(1.5, Math.min(3, stepPx * 0.34));
-  const maxCells = 420_000;
+  const cell = Math.max(1.5, Math.min(2.8, stepPx * 0.36));
+  const maxCells = 400_000;
   if (Math.ceil(w / cell) * Math.ceil(h / cell) > maxCells) {
     return Math.sqrt((w * h) / maxCells);
   }
@@ -148,5 +122,40 @@ export function rippleGridCell(stepPx: number, w: number, h: number): number {
 }
 
 export function rippleRasterPad(reach: number, w: number, h: number): number {
-  return Math.ceil(reach * 1.12 + Math.max(w, h) * 0.1);
+  return Math.ceil(reach * 1.15 + Math.max(w, h) * 0.12);
+}
+
+export function rippleRingFill(exp: ExpansionSettings): string {
+  return exp.fillColor;
+}
+
+export function rippleStrokeColor(exp: ExpansionSettings, gen: number): string {
+  if (exp.paletteMode === 'custom') {
+    const pal = exp.customPalette.filter((c) => c.length > 0);
+    if (pal.length >= 2) return pal[(gen - 1) % pal.length]!;
+  }
+  return exp.strokeColor;
+}
+
+/** Миграция старых сохранённых настроек. */
+export function normalizeExpansion(exp: ExpansionSettings): ExpansionSettings {
+  const e = { ...exp };
+  const legacy = exp as unknown as Record<string, unknown>;
+
+  if (legacy.spacingMode === 'accelerate') e.distribution = 'falloff';
+  if (legacy.spacingMode === 'uniform' && !exp.distribution) e.distribution = 'uniform';
+  if (typeof legacy.spacingSpread === 'number' && exp.falloffStrength === undefined) {
+    e.falloffStrength = legacy.spacingSpread;
+  }
+  if (legacy.rippleColorMode === 'custom') e.paletteMode = 'custom';
+  if (legacy.rippleColorMode === 'dual') e.paletteMode = 'twoColors';
+  if (typeof legacy.flowBiasX === 'number') e.horizontalBias = legacy.flowBiasX;
+  if (typeof legacy.flowBiasY === 'number') e.verticalBias = legacy.flowBiasY;
+  if (typeof legacy.colorB === 'string' && !exp.strokeColor) e.strokeColor = legacy.colorB;
+  if (typeof legacy.colorA === 'string' && !exp.fillColor) e.fillColor = legacy.colorA;
+  if (Array.isArray(legacy.customColors) && !exp.customPalette?.length) {
+    e.customPalette = legacy.customColors as string[];
+  }
+
+  return e;
 }

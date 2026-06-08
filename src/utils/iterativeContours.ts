@@ -449,6 +449,56 @@ export function drawFilledGenerationRange(
 }
 
 /**
+ * Cavalry / 36Days: кольца залиты фоном, обводки поверх.
+ * Каждое поколение — отдельная фигура, без union.
+ */
+export function drawOffsetContourRange(
+  ctx: CanvasRenderingContext2D,
+  maskAt: (gen: number) => Uint8Array | null,
+  firstGen: number,
+  lastGen: number,
+  cw: number,
+  ch: number,
+  cell: number,
+  originX: number,
+  originY: number,
+  ringFill: string | null,
+  strokeForGen: (gen: number) => string,
+  lineWidth: number,
+  alpha: number,
+  segBuf: Seg[],
+  scratch: HTMLCanvasElement,
+) {
+  const lo = Math.max(1, firstGen);
+  const hi = lastGen;
+  if (lo > hi) return;
+
+  ctx.save();
+  ctx.translate(originX, originY);
+
+  for (let g = lo; g <= hi; g++) {
+    const mask = maskAt(g);
+    const prev = maskAt(g - 1);
+    if (!mask || !prev) continue;
+    paintRippleRing(ctx, mask, prev, cw, ch, cell, 0, 0, ringFill, alpha, scratch);
+  }
+
+  for (let g = lo; g <= hi; g++) {
+    const mask = maskAt(g);
+    if (!mask) continue;
+    strokeContourLoops(
+      ctx,
+      extractMaskLoops(mask, cw, ch, cell, segBuf),
+      strokeForGen(g),
+      lineWidth,
+      alpha,
+    );
+  }
+
+  ctx.restore();
+}
+
+/**
  * Cavalry: Shape1…ShapeN — кольца залиты фоном, все обводки поверх (36Days).
  */
 export function drawContourGenerationStack(

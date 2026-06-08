@@ -3,16 +3,18 @@ import type opentype from 'opentype.js';
 import { DEFAULT_PLAYGROUND_VISUAL, type ExpansionSettings } from '../types/playground';
 import { clearNeutral } from '../utils/canvas';
 import { rasterizeGlyphMask, type GlyphSlot } from '../utils/contourField';
-import { drawFilledGenerationRange, maskHasInk } from '../utils/iterativeContours';
+import { drawOffsetContourRange, maskHasInk } from '../utils/iterativeContours';
 import { fillGlyphPath } from '../utils/opentypeCanvas';
 import {
-  expandRippleStepInto,
+  normalizeExpansion,
+  offsetFromPrevInto,
   RIPPLE_FLOW_SPEED,
-  rippleBaseRadiusCells,
-  rippleColorAt,
+  rippleBaseStepCells,
   rippleGridCell,
   rippleRasterPad,
-  rippleScreenReach,
+  rippleReach,
+  rippleRingFill,
+  rippleStrokeColor,
 } from '../utils/rippleOffset';
 import { layoutTextForCanvas } from '../utils/textLayout';
 import { effectOpacity } from '../utils/visualAlpha';
@@ -20,21 +22,20 @@ import type { ModeController, ModeSnapshot } from './types';
 
 type Lay = { char: string; x: number; bl: number };
 
-const MIN_COPIES = 2;
-const MAX_COPIES = 200;
+const MIN_COUNT = 2;
+const MAX_COUNT = 160;
 const GC_MARGIN = 2;
 
-function safeExpansion(s: ModeSnapshot): ExpansionSettings {
-  return { ...DEFAULT_PLAYGROUND_VISUAL.expansion, ...s.visual.expansion };
+function settings(s: ModeSnapshot): ExpansionSettings {
+  return normalizeExpansion({
+    ...DEFAULT_PLAYGROUND_VISUAL.expansion,
+    ...s.visual.expansion,
+  });
 }
 
-function copyCount(exp: ExpansionSettings): number {
+function contourCount(exp: ExpansionSettings): number {
   const n = Math.round(exp.contourCount);
-  return Math.min(MAX_COPIES, Math.max(MIN_COPIES, Number.isFinite(n) ? n : 24));
-}
-
-function stageFill(stageBackground: string): string | null {
-  return stageBackground === 'transparent' ? null : stageBackground;
+  return Math.min(MAX_COUNT, Math.max(MIN_COUNT, Number.isFinite(n) ? n : 28));
 }
 
 export function createExpansionMode(
@@ -47,14 +48,14 @@ export function createExpansionMode(
   let lays: Lay[] = [];
   let layoutSig = '';
 
-  const masks = new Map<number, Uint8Array>();
-  let highestGen = 0;
+  /** Shape0…ShapeK — rolling cache цепочки offset. */
+  const shapes = new Map<number, Uint8Array>();
+  let topGen = 0;
   let chainSig = '';
-  let copiesN = 24;
 
   let gridCw = 0;
   let gridCh = 0;
-  let gridCellPx = 2;
+  let gridCell = 2;
   let gridPad = 0;
   let baseRadius = 1;
 
@@ -64,7 +65,9 @@ export function createExpansionMode(
   let flowPhase = 0;
   let flowHead = 0;
   let tickerFn: (() => void) | null = null;
-  const fillScratch = document.createElement('canvas');
+
+  const ringScratch = document.createElement('canvas');
+  const segBuf: { x0: number; y0: number; x1: number; y1: number }[] = [];
 
   function viewport() {
     const s = getSnap();
@@ -106,59 +109,58 @@ export function createExpansionMode(
   }
 
   function gcBelow(minGen: number) {
-    for (const g of masks.keys()) {
-      if (g > 0 && g < minGen) masks.delete(g);
+    for (const g of shapes.keys()) {
+      if (g > 0 && g < minGen) shapes.delete(g);
     }
   }
 
-  function expandOne(exp: ExpansionSettings, gen: number, prev: Uint8Array): Uint8Array {
+  function offsetStep(exp: ExpansionSettings, gen: number, prev: Uint8Array): Uint8Array {
     if (!bufA || bufA.length !== prev.length) {
       bufA = new Uint8Array(prev.length);
       bufB = new Uint8Array(prev.length);
     }
-    expandRippleStepInto(
+    offsetFromPrevInto(
       prev,
       bufA,
       gen,
       gridCw,
       gridCh,
       baseRadius,
-      exp.spacingMode,
-      exp.spacingSpread,
-      exp.flowBiasX,
-      exp.flowBiasY,
+      exp.distribution,
+      exp.falloffStrength,
+      exp.horizontalBias,
+      exp.verticalBias,
       bufB ?? undefined,
     );
     return new Uint8Array(bufA);
   }
 
-  function ensureGeneration(exp: ExpansionSettings, target: number) {
-    while (highestGen < target) {
-      const next = highestGen + 1;
-      const prev = masks.get(highestGen);
+  function buildTo(exp: ExpansionSettings, target: number) {
+    while (topGen < target) {
+      const next = topGen + 1;
+      const prev = shapes.get(topGen);
       if (!prev) break;
-      masks.set(next, expandOne(exp, next, prev));
-      highestGen = next;
+      shapes.set(next, offsetStep(exp, next, prev));
+      topGen = next;
     }
   }
 
-  function rebuildChain(s: ModeSnapshot) {
+  function resetChain(s: ModeSnapshot) {
     const { w, h } = viewport();
-    masks.clear();
-    highestGen = 0;
+    shapes.clear();
+    topGen = 0;
     bufA = null;
     bufB = null;
 
     if (w < 32 || h < 32 || lays.length === 0) return;
 
-    const exp = safeExpansion(s);
-    copiesN = copyCount(exp);
-    const reach = rippleScreenReach(w, h, exp.flowBiasX, exp.flowBiasY);
-    const stepPx = reach / copiesN;
-    const cell = rippleGridCell(stepPx, w, h);
+    const exp = settings(s);
+    const count = contourCount(exp);
+    const reach = rippleReach(w, h, exp.horizontalBias, exp.verticalBias);
+    const stepPx = reach / count;
+    gridCell = rippleGridCell(stepPx, w, h);
     gridPad = rippleRasterPad(reach, w, h);
-    baseRadius = rippleBaseRadiusCells(w, h, copiesN, cell, exp.flowBiasX, exp.flowBiasY);
-    gridCellPx = cell;
+    baseRadius = rippleBaseStepCells(w, h, count, gridCell, exp.horizontalBias, exp.verticalBias);
 
     const rw = w + gridPad * 2;
     const rh = h + gridPad * 2;
@@ -171,7 +173,7 @@ export function createExpansionMode(
     const raster = rasterizeGlyphMask(
       rw,
       rh,
-      cell,
+      gridCell,
       slots,
       layoutFontCss || s.fontCss,
       layoutFontSize,
@@ -181,61 +183,56 @@ export function createExpansionMode(
 
     gridCw = raster.cw;
     gridCh = raster.ch;
-    masks.set(0, new Uint8Array(raster.mask));
-    ensureGeneration(exp, copiesN);
+    shapes.set(0, new Uint8Array(raster.mask));
+    buildTo(exp, count);
   }
 
   function ensureChain(s: ModeSnapshot) {
     const { w, h } = viewport();
     if (w < 32 || h < 32 || lays.length === 0) {
-      masks.clear();
-      highestGen = 0;
+      shapes.clear();
+      topGen = 0;
       return;
     }
 
-    const exp = safeExpansion(s);
-    const n = copyCount(exp);
-    const reach = rippleScreenReach(w, h, exp.flowBiasX, exp.flowBiasY);
-    const stepPx = reach / n;
+    const exp = settings(s);
+    const count = contourCount(exp);
+    const reach = rippleReach(w, h, exp.horizontalBias, exp.verticalBias);
+    const stepPx = reach / count;
     const cell = rippleGridCell(stepPx, w, h);
     const pad = rippleRasterPad(reach, w, h);
-    const radius = rippleBaseRadiusCells(w, h, n, cell, exp.flowBiasX, exp.flowBiasY);
+    const radius = rippleBaseStepCells(w, h, count, cell, exp.horizontalBias, exp.verticalBias);
 
     const sig = [
       layoutSig,
-      n,
+      count,
       cell,
       pad,
       radius,
-      exp.spacingMode,
-      exp.spacingSpread,
-      exp.flowBiasX,
-      exp.flowBiasY,
-      exp.rippleColorMode,
-      exp.colorA,
-      exp.colorB,
-      exp.customColors.join(','),
+      exp.distribution,
+      exp.falloffStrength,
+      exp.horizontalBias,
+      exp.verticalBias,
+      exp.paletteMode,
+      exp.fillColor,
+      exp.strokeColor,
+      exp.strokeWidth,
+      exp.customPalette.join(','),
     ].join('|');
 
-    if (sig === chainSig && masks.has(0) && highestGen >= n) return;
+    if (sig === chainSig && shapes.has(0) && topGen >= count) return;
 
     chainSig = sig;
     flowPhase = 0;
     flowHead = 0;
-    rebuildChain(s);
+    resetChain(s);
   }
 
-  function drawTextHole(fill: string | null, alpha: number, font: opentype.Font) {
+  function drawTextTop(textColor: string, alpha: number, font: opentype.Font) {
     ctx.save();
     ctx.globalAlpha = alpha;
     for (const g of lays) {
-      const path = font.getPath(g.char, g.x, g.bl, layoutFontSize);
-      if (fill) fillGlyphPath(ctx, path, fill);
-      else {
-        ctx.globalCompositeOperation = 'destination-out';
-        fillGlyphPath(ctx, path, 'rgba(0,0,0,1)');
-        ctx.globalCompositeOperation = 'source-over';
-      }
+      fillGlyphPath(ctx, font.getPath(g.char, g.x, g.bl, layoutFontSize), textColor);
     }
     ctx.restore();
   }
@@ -250,47 +247,58 @@ export function createExpansionMode(
       ensureChain(s);
       clearNeutral(ctx, w, h, s.visual.stageBackground);
 
-      const exp = safeExpansion(s);
-      const n = copyCount(exp);
-      if (!masks.has(0) || highestGen < 1 || lays.length === 0) return;
+      const exp = settings(s);
+      const count = contourCount(exp);
+      if (!shapes.has(0) || topGen < 1 || lays.length === 0) return;
 
       const alpha = effectOpacity(s.visual);
-      const textFill = stageFill(s.visual.stageBackground);
-      const frozen = s.visual.sceneFrozen;
+      const ringFill = rippleRingFill(exp);
+      const lw = Math.max(0.35, exp.strokeWidth);
 
-      let firstGen = 1;
-      let lastGen = n;
+      let first = 1;
+      let last = count;
 
-      if (!frozen) {
+      if (!s.visual.sceneFrozen) {
         flowPhase += RIPPLE_FLOW_SPEED * (gsap.ticker.deltaRatio() / 60) * 9;
         const head = Math.floor(flowPhase);
         if (head !== flowHead) {
           flowHead = head;
-          ensureGeneration(exp, head + n);
+          buildTo(exp, head + count);
           gcBelow(head - GC_MARGIN);
         }
-        firstGen = head + 1;
-        lastGen = head + n;
-        ensureGeneration(exp, lastGen);
+        first = head + 1;
+        last = head + count;
+        buildTo(exp, last);
       }
 
-      ctx.save();
-      drawFilledGenerationRange(
+      const fill =
+        ringFill === 'transparent' || s.visual.stageBackground === 'transparent'
+          ? s.visual.stageBackground === 'transparent'
+            ? null
+            : ringFill
+          : ringFill;
+
+      drawOffsetContourRange(
         ctx,
-        (g) => masks.get(g) ?? null,
-        firstGen,
-        lastGen,
+        (g) => shapes.get(g) ?? null,
+        first,
+        last,
         gridCw,
         gridCh,
-        gridCellPx,
+        gridCell,
         -gridPad,
         -gridPad,
-        (g) => rippleColorAt(exp, g),
+        fill,
+        (g) => rippleStrokeColor(exp, g),
+        lw,
         alpha,
-        fillScratch,
+        segBuf,
+        ringScratch,
       );
-      if (s.opentypeFont) drawTextHole(textFill, alpha, s.opentypeFont);
-      ctx.restore();
+
+      if (s.opentypeFont) {
+        drawTextTop(s.visual.monochromeColor, alpha, s.opentypeFont);
+      }
     } catch (err) {
       console.error('[Ripple] tick failed', err);
     }
@@ -300,8 +308,8 @@ export function createExpansionMode(
     start() {
       layoutSig = '';
       chainSig = '';
-      masks.clear();
-      highestGen = 0;
+      shapes.clear();
+      topGen = 0;
       flowPhase = 0;
       flowHead = 0;
       bufA = null;
