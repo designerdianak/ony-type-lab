@@ -28,9 +28,11 @@ type LineExtrusion = {
   lays: Lay[];
 };
 
-const TRAIL_MASK_LAYERS = 26;
-const TRAIL_EXTENT_CAP = 48;
-const CHOPPY_BANDS = 14;
+type MaskStep = { count: number; stx: number; sty: number };
+
+const TRAIL_EXTENT_CAP = 56;
+const CHOPPY_BANDS = 12;
+const MASK_FEATHER_PX = 0.7;
 
 function canvasDpr(w: number, canvas: HTMLCanvasElement): number {
   return canvas.width / Math.max(1, w);
@@ -47,6 +49,16 @@ function groupGlyphsByLine(glyphs: GlyphLayout[], fontSize: number): GlyphLayout
   return lines.sort((a, b) => a[0]!.baseline - b[0]!.baseline);
 }
 
+function maskStep(extent: number, tx: number, ty: number, fontSize: number): MaskStep {
+  const vx = tx * extent;
+  const vy = ty * extent;
+  const trailLen = Math.hypot(vx, vy) || 1;
+  const unit = Math.hypot(tx, ty) || 0.35;
+  const overlapPx = Math.max(unit * 0.22, fontSize * 0.014);
+  const count = Math.min(48, Math.max(18, Math.ceil(trailLen / overlapPx)));
+  return { count, stx: vx / count, sty: vy / count };
+}
+
 export function createGradientFlowMode(
   _canvas: HTMLCanvasElement,
   ctx: CanvasRenderingContext2D,
@@ -60,19 +72,19 @@ export function createGradientFlowMode(
 
   let layoutFontSize = 72;
   let lines: LineExtrusion[] = [];
+  let surfaceW = 0;
+  let surfaceH = 0;
 
   const trailLayer = document.createElement('canvas');
-  const trailCtx = trailLayer.getContext('2d');
+  const trailCtx = trailLayer.getContext('2d', { alpha: true });
   let trailKey = '';
   let trailReady = false;
 
   const textLayer = document.createElement('canvas');
-  const textCtx = textLayer.getContext('2d');
+  const textCtx = textLayer.getContext('2d', { alpha: true });
   let textKey = '';
   let textReady = false;
 
-  const gradScratch = document.createElement('canvas');
-  const gradScratchCtx = gradScratch.getContext('2d');
   let trailMaskSig = '';
   const lineMasks: HTMLCanvasElement[] = [];
   let choppyPaletteCache = '';
@@ -187,28 +199,42 @@ export function createGradientFlowMode(
 
   function extentLayers(s: ModeSnapshot): number {
     const e = s.visual.elastic;
-    const raw = Math.max(28, Math.round(e.flowLength * 2.8));
-    return Math.min(TRAIL_EXTENT_CAP, raw);
+    const raw = Math.round(e.flowLength * 2.8);
+    return Math.min(TRAIL_EXTENT_CAP, Math.max(2, raw));
   }
 
-  function setupSurface(layer: HTMLCanvasElement, layerCtx: CanvasRenderingContext2D, w: number, h: number) {
+  function ensureSurface(w: number, h: number) {
+    if (surfaceW === w && surfaceH === h && trailLayer.width > 0) return;
+    surfaceW = w;
+    surfaceH = h;
     const dpr = canvasDpr(w, ctx.canvas);
     const pw = Math.max(1, Math.round(w * dpr));
     const ph = Math.max(1, Math.round(h * dpr));
-    if (layer.width !== pw) layer.width = pw;
-    if (layer.height !== ph) layer.height = ph;
-    layerCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    return dpr;
+    for (const layer of [trailLayer, textLayer]) {
+      if (layer.width !== pw) layer.width = pw;
+      if (layer.height !== ph) layer.height = ph;
+    }
+    trailCtx?.setTransform(dpr, 0, 0, dpr, 0, 0);
+    textCtx?.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
   function blitLayer(layer: HTMLCanvasElement, w: number, h: number) {
     const dpr = canvasDpr(w, ctx.canvas);
-    ctx.save();
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(layer, 0, 0, layer.width, layer.height, 0, 0, w * dpr, h * dpr);
-    ctx.restore();
+  }
+
+  function featherMask(raw: HTMLCanvasElement, w: number, h: number): HTMLCanvasElement {
+    const out = document.createElement('canvas');
+    out.width = raw.width;
+    out.height = raw.height;
+    const outCtx = out.getContext('2d');
+    if (!outCtx) return raw;
+    const dpr = canvasDpr(w, ctx.canvas);
+    outCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    outCtx.filter = `blur(${MASK_FEATHER_PX}px)`;
+    outCtx.drawImage(raw, 0, 0, raw.width, raw.height, 0, 0, w, h);
+    outCtx.filter = 'none';
+    return out;
   }
 
   function ensureTrailMasks(
@@ -218,31 +244,34 @@ export function createGradientFlowMode(
     w: number,
     h: number,
   ) {
-    const sig = `${layoutSig}|${extent}|${baseTx}|${baseTy}|${w}|${h}`;
+    const step = maskStep(extent, baseTx, baseTy, layoutFontSize);
+    const sig = `${layoutSig}|${extent}|${baseTx}|${baseTy}|${step.count}|${w}|${h}`;
     if (sig === trailMaskSig && lineMasks.length === lines.length) return;
 
     trailMaskSig = sig;
     lineMasks.length = 0;
 
-    const stx = (baseTx * extent) / TRAIL_MASK_LAYERS;
-    const sty = (baseTy * extent) / TRAIL_MASK_LAYERS;
+    const dpr = canvasDpr(w, ctx.canvas);
+    const pw = Math.max(1, Math.round(w * dpr));
+    const ph = Math.max(1, Math.round(h * dpr));
 
     for (const line of lines) {
-      const mask = document.createElement('canvas');
-      const maskCtx = mask.getContext('2d');
-      if (!maskCtx) continue;
+      const raw = document.createElement('canvas');
+      raw.width = pw;
+      raw.height = ph;
+      const rawCtx = raw.getContext('2d');
+      if (!rawCtx) continue;
 
-      setupSurface(mask, maskCtx, w, h);
-      maskCtx.clearRect(0, 0, w, h);
-      maskCtx.fillStyle = '#fff';
-      for (let i = 1; i <= TRAIL_MASK_LAYERS; i++) {
-        maskCtx.save();
-        maskCtx.translate(line.anchor.cx + stx * i, line.anchor.cy + sty * i);
-        maskCtx.translate(-line.anchor.cx, -line.anchor.cy);
-        maskCtx.fill(line.path2D, 'evenodd');
-        maskCtx.restore();
+      rawCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      rawCtx.fillStyle = '#fff';
+      for (let i = 1; i <= step.count; i++) {
+        rawCtx.save();
+        rawCtx.translate(line.anchor.cx + step.stx * i, line.anchor.cy + step.sty * i);
+        rawCtx.translate(-line.anchor.cx, -line.anchor.cy);
+        rawCtx.fill(line.path2D, 'evenodd');
+        rawCtx.restore();
       }
-      lineMasks.push(mask);
+      lineMasks.push(featherMask(raw, w, h));
     }
   }
 
@@ -258,10 +287,11 @@ export function createGradientFlowMode(
     choppy: boolean,
   ): CanvasGradient {
     const shift = phase * trailLen;
-    const gx0 = cx - dirX * shift;
-    const gy0 = cy - dirY * shift;
-    const gx1 = gx0 + dirX * trailLen;
-    const gy1 = gy0 + dirY * trailLen;
+    const span = trailLen * (choppy ? 1 : 1.35);
+    const gx0 = cx - dirX * shift - dirX * trailLen * 0.08;
+    const gy0 = cy - dirY * shift - dirY * trailLen * 0.08;
+    const gx1 = gx0 + dirX * span;
+    const gy1 = gy0 + dirY * span;
     const grad = target.createLinearGradient(gx0, gy0, gx1, gy1);
 
     if (choppy) {
@@ -275,9 +305,14 @@ export function createGradientFlowMode(
       const c = pal[0] ?? '#000';
       grad.addColorStop(0, c);
       grad.addColorStop(1, c);
+    } else if (pal.length === 2) {
+      grad.addColorStop(0, pal[0]!);
+      grad.addColorStop(0.5, pal[1]!);
+      grad.addColorStop(1, pal[0]!);
     } else {
+      const n = pal.length - 1;
       for (let i = 0; i < pal.length; i++) {
-        grad.addColorStop(i / (pal.length - 1), pal[i]!);
+        grad.addColorStop(i / n, pal[i]!);
       }
     }
     return grad;
@@ -294,7 +329,7 @@ export function createGradientFlowMode(
     h: number,
     choppy: boolean,
   ) {
-    if (!trailCtx || !gradScratchCtx) return;
+    if (!trailCtx) return;
 
     ensureTrailMasks(extent, baseTx, baseTy, w, h);
 
@@ -307,18 +342,16 @@ export function createGradientFlowMode(
     trailCtx.beginPath();
     trailCtx.rect(0, 0, w, h);
     trailCtx.clip();
-
-    setupSurface(gradScratch, gradScratchCtx, w, h);
+    trailCtx.globalAlpha = alpha;
 
     for (let li = 0; li < lines.length; li++) {
       const line = lines[li]!;
       const mask = lineMasks[li];
       if (!mask) continue;
 
-      gradScratchCtx.clearRect(0, 0, w, h);
-      gradScratchCtx.globalCompositeOperation = 'source-over';
-      gradScratchCtx.fillStyle = trailGradient(
-        gradScratchCtx,
+      trailCtx.globalCompositeOperation = 'source-over';
+      trailCtx.fillStyle = trailGradient(
+        trailCtx,
         line.anchor.cx,
         line.anchor.cy,
         dirX,
@@ -328,15 +361,12 @@ export function createGradientFlowMode(
         pal,
         choppy,
       );
-      gradScratchCtx.fillRect(0, 0, w, h);
-      gradScratchCtx.globalCompositeOperation = 'destination-in';
-      gradScratchCtx.drawImage(mask, 0, 0, mask.width, mask.height, 0, 0, w, h);
-      gradScratchCtx.globalCompositeOperation = 'source-over';
-
-      trailCtx.globalAlpha = alpha;
-      trailCtx.drawImage(gradScratch, 0, 0, gradScratch.width, gradScratch.height, 0, 0, w, h);
+      trailCtx.fillRect(0, 0, w, h);
+      trailCtx.globalCompositeOperation = 'destination-in';
+      trailCtx.drawImage(mask, 0, 0, mask.width, mask.height, 0, 0, w, h);
     }
 
+    trailCtx.globalCompositeOperation = 'source-over';
     trailCtx.restore();
   }
 
@@ -344,20 +374,22 @@ export function createGradientFlowMode(
     const e = s.visual.elastic;
     const fillMode = resolveElasticGradientFill(e);
     const choppy = fillMode === 'choppy';
-    const pal = choppy ? choppyPalette(s) : smoothPalette(s);
     const extent = extentLayers(s);
     const { tx, ty } = trailStep(s);
-    const key = `${layoutSig}|${fillMode}|${extent}|${e.directionDeg}|${e.stepSize}|${pal.join(',')}|${phase.toFixed(3)}|${alpha}`;
 
-    if (!animating && trailReady && key === trailKey && trailLayer.width > 0) {
-      return;
+    if (!animating && trailReady && trailLayer.width > 0) {
+      const pal = choppy ? choppyPalette(s) : smoothPalette(s);
+      const key = `${layoutSig}|${fillMode}|${extent}|${e.directionDeg}|${e.stepSize}|${pal.join(',')}|${phase.toFixed(3)}|${alpha}`;
+      if (key === trailKey) return;
+      trailKey = key;
+    } else if (!animating) {
+      trailKey = '';
     }
-    if (!trailCtx) return;
 
-    trailKey = key;
+    if (!trailCtx) return;
     trailReady = !animating;
 
-    setupSurface(trailLayer, trailCtx, w, h);
+    ensureSurface(w, h);
     trailCtx.clearRect(0, 0, w, h);
     paintTrailMasked(s, phase, alpha, extent, tx, ty, w, h, choppy);
   }
@@ -372,7 +404,7 @@ export function createGradientFlowMode(
 
     textKey = key;
     textReady = true;
-    setupSurface(textLayer, textCtx, w, h);
+    ensureSurface(w, h);
     textCtx.clearRect(0, 0, w, h);
     textCtx.save();
     textCtx.globalAlpha = alpha;
@@ -399,8 +431,6 @@ export function createGradientFlowMode(
     const h = Math.max(1, Math.round(s.h));
 
     ensureLayout(s);
-    clearNeutral(ctx, w, h, s.visual.stageBackground);
-    applyMultiplyBlend(ctx, s.visual.multiplyBlend);
 
     const alpha = effectOpacity(s.visual);
     const animating = s.visual.animationEnabled && !s.visual.sceneFrozen && lines.length > 0;
@@ -410,6 +440,9 @@ export function createGradientFlowMode(
       flowPhase += speed * (gsap.ticker.deltaRatio() / 60);
       if (!Number.isFinite(flowPhase)) flowPhase = 0;
     }
+
+    clearNeutral(ctx, w, h, s.visual.stageBackground);
+    applyMultiplyBlend(ctx, s.visual.multiplyBlend);
 
     if (lines.length > 0) {
       paintTrail(s, flowPhase, alpha, w, h, animating);
@@ -423,6 +456,8 @@ export function createGradientFlowMode(
       layoutSig = '';
       clipperReady = false;
       flowPhase = 0;
+      surfaceW = 0;
+      surfaceH = 0;
       trailKey = '';
       trailReady = false;
       textKey = '';
