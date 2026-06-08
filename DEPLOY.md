@@ -14,10 +14,9 @@ GitHub отдавал **исходный** `index.html` (`/src/main.tsx`), а н
 ## Один раз в настройках репозитория
 
 1. Откройте https://github.com/designerdianak/ony-type-lab/settings/pages  
-2. **Build and deployment → Source:** Deploy from a branch  
-3. **Branch:** `main` → папка **`/docs`** → Save  
+2. **Build and deployment → Source:** **GitHub Actions** (не «Deploy from a branch /docs»)  
 
-(Либо Source: **GitHub Actions**, если пушите workflow.)
+Если стоит деплой из папки `/docs` на ветке `main`, сайт будет отдавать **старый** бандл, пока вы вручную не запустите `npm run build:pages` и не запушите `docs/`.
 
 ## Как обновить сайт
 
@@ -32,14 +31,16 @@ GitHub отдавал **исходный** `index.html` (`/src/main.tsx`), а н
 1. Панель Source Control (иконка ветки)  
 2. Stage → Commit → **Push** (или Sync)
 
-### Вариант C — терминал
+### Вариант C — терминал (если Pages всё ещё из `/docs`)
 
 ```bash
 cd ony-type-lab
 npm run build:pages
-git add docs package.json vite.config.ts src .github
+git add docs
 git commit -m "deploy: update docs for GitHub Pages"
 git push origin main
 ```
 
-После push подождите 1–2 минуты и обновите страницу с **Cmd+Shift+R**.
+При **GitHub Actions** как source достаточно пуша в `main` — workflow сам соберёт `docs/` и задеплоит.
+
+После push подождите 1–2 минуты и обновите страницу с **Cmd+Shift+R** (жёсткое обновление, без кэша).
