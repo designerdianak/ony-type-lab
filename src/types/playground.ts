@@ -148,13 +148,13 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
   effectOpacity: 1,
   forceUppercase: false,
   expansion: {
-    ringSpacing: 5,
-    contourCount: 28,
+    ringSpacing: 4,
+    contourCount: 32,
     strokeWidth: 1,
-    growSpeed: 0.4,
+    growSpeed: 0.45,
     strokeColor: 'auto',
     offsetScale: 1,
-    waveFlatten: 0.45,
+    waveFlatten: 0.5,
   },
   colorStack: {
     duplicateCount: 28,

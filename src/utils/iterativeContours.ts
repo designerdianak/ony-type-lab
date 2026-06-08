@@ -204,16 +204,14 @@ export function smoothMask(
 }
 
 function smoothParamsForStep(stepIndex: number, p: ShapeStepParams) {
-  if (stepIndex <= 2) {
-    return { passes: 1, kernel: 1, threshold: 0.38 };
-  }
+  const d = stepIndex - p.smoothFromStep;
+  if (d <= 0) return { passes: 1, kernel: 1, threshold: 0.42 };
   const passes = Math.min(
-    10,
-    p.baseSmoothPasses + Math.floor((stepIndex - 2) * (0.06 + p.waveFlatten * 0.2)),
+    8,
+    p.baseSmoothPasses + Math.floor(d * (0.05 + p.waveFlatten * 0.18)),
   );
-  const kernel = 1 + Math.min(3, Math.floor(stepIndex / 5));
-  const threshold =
-    p.baseThreshold - Math.min(0.12, (stepIndex - 2) * 0.004 * (0.4 + p.waveFlatten));
+  const kernel = 1 + Math.min(3, Math.floor(d / 4));
+  const threshold = p.baseThreshold - Math.min(0.1, d * 0.0035 * (0.35 + p.waveFlatten));
   return { passes, kernel, threshold };
 }
 
@@ -284,6 +282,76 @@ function appendLoop(ctx: CanvasRenderingContext2D, loop: Pt[]) {
   ctx.moveTo(loop[0]!.x, loop[0]!.y);
   for (let i = 1; i < loop.length; i++) ctx.lineTo(loop[i]!.x, loop[i]!.y);
   ctx.closePath();
+}
+
+function paintMaskRegion(
+  ctx: CanvasRenderingContext2D,
+  mask: Uint8Array,
+  prevMask: Uint8Array | null,
+  cw: number,
+  ch: number,
+  cell: number,
+  fill: string | null,
+  alpha: number,
+  scratch: HTMLCanvasElement,
+) {
+  const pw = Math.ceil(cw * cell);
+  const ph = Math.ceil(ch * cell);
+  if (scratch.width !== cw || scratch.height !== ch) {
+    scratch.width = cw;
+    scratch.height = ch;
+  }
+  const octx = scratch.getContext('2d');
+  if (!octx) return;
+
+  const img = octx.createImageData(cw, ch);
+  for (let i = 0; i < mask.length; i++) {
+    if (!mask[i]) continue;
+    if (prevMask && prevMask[i]) continue;
+    const p = i * 4;
+    img.data[p] = 255;
+    img.data[p + 1] = 255;
+    img.data[p + 2] = 255;
+    img.data[p + 3] = 255;
+  }
+  octx.putImageData(img, 0, 0);
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(scratch, 0, 0, cw, ch, 0, 0, pw, ph);
+  if (fill) {
+    ctx.globalCompositeOperation = 'source-in';
+    ctx.fillStyle = fill;
+    ctx.fillRect(0, 0, pw, ph);
+  } else {
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fillStyle = 'rgba(0,0,0,1)';
+    ctx.fillRect(0, 0, pw, ph);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.restore();
+}
+
+/**
+ * Волна референса: кольцо (Shapeₙ \\ Shapeₙ₋₁) залито фоном, виден только внешний контур.
+ */
+export function drawRippleWave(
+  ctx: CanvasRenderingContext2D,
+  mask: Uint8Array,
+  prevMask: Uint8Array,
+  loops: Pt[][],
+  cw: number,
+  ch: number,
+  cell: number,
+  fill: string | null,
+  stroke: string,
+  lineWidth: number,
+  alpha: number,
+  scratch: HTMLCanvasElement,
+) {
+  paintMaskRegion(ctx, mask, prevMask, cw, ch, cell, fill, alpha, scratch);
+  strokeContourLoops(ctx, loops, stroke, lineWidth, alpha);
 }
 
 /** Заливка всей формы цветом фона + обводка контура (Shapeₙ). */
@@ -378,20 +446,3 @@ export function strokeContourLoops(
   ctx.restore();
 }
 
-/** @deprecated кольцевая заливка — для Ripple используйте drawShapeLayer */
-export function drawRippleRingLayer(
-  ctx: CanvasRenderingContext2D,
-  mask: Uint8Array,
-  _prevMask: Uint8Array | null,
-  loops: Pt[][],
-  cw: number,
-  ch: number,
-  cell: number,
-  fill: string | null,
-  stroke: string,
-  lineWidth: number,
-  alpha: number,
-  scratch: HTMLCanvasElement,
-) {
-  drawShapeLayer(ctx, mask, loops, cw, ch, cell, fill, stroke, lineWidth, alpha, scratch);
-}

@@ -5,14 +5,14 @@ import { colorForGlyph } from '../utils/colors';
 import { clearNeutral } from '../utils/canvas';
 import { rasterizeGlyphMask } from '../utils/contourField';
 import {
-  drawShapeLayer,
+  drawRippleWave,
   expandShapeStep,
   extractMaskLoops,
   maskHasInk,
   type ContourChain,
   type ShapeStepParams,
 } from '../utils/iterativeContours';
-import { fillGlyphPath, strokeGlyphPath } from '../utils/opentypeCanvas';
+import { strokeGlyphPath } from '../utils/opentypeCanvas';
 import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
 import { effectOpacity } from '../utils/visualAlpha';
 import type { ModeController, ModeSnapshot } from './types';
@@ -30,8 +30,8 @@ type GlyphBuild = {
   ready: boolean;
 };
 
-const STEPS_PER_GLYPH = 2;
-const BUILD_BUDGET_MS = 18;
+const STEPS_PER_GLYPH = 3;
+const BUILD_BUDGET_MS = 20;
 
 function safeExpansion(s: ModeSnapshot) {
   return { ...DEFAULT_PLAYGROUND_VISUAL.expansion, ...s.visual.expansion };
@@ -39,30 +39,32 @@ function safeExpansion(s: ModeSnapshot) {
 
 function contourCount(exp: ReturnType<typeof safeExpansion>): number {
   const n = Math.round(exp.contourCount);
-  if (!Number.isFinite(n) || n < 2) return 24;
+  if (!Number.isFinite(n) || n < 2) return 32;
   return Math.min(120, n);
 }
 
+/** ~1px сетка: контур повторяет форму буквы, как в референсе. */
 function gridCell(ringSpacing: number, w: number, h: number) {
   const spacing = Math.max(2, ringSpacing);
-  let cell = Math.max(0.85, Math.min(2, spacing * 0.18));
+  let cell = Math.max(0.65, Math.min(1.35, spacing / 4.2));
   const cw = Math.ceil(w / cell);
   const ch = Math.ceil(h / cell);
-  const maxCells = 400_000;
+  const maxCells = 500_000;
   if (cw * ch > maxCells) cell = Math.sqrt((w * h) / maxCells);
   return cell;
 }
 
 function shapeParams(exp: ReturnType<typeof safeExpansion>, cell: number): ShapeStepParams {
-  const spacing = Math.max(2, exp.ringSpacing ?? 5);
+  const spacing = Math.max(2, exp.ringSpacing ?? 4);
   const count = contourCount(exp);
-  const flatten = exp.waveFlatten ?? 0.45;
+  const flatten = exp.waveFlatten ?? 0.5;
+  const scale = Math.max(0.5, Math.min(2, exp.offsetScale ?? 1));
   return {
-    radiusCells: Math.max(0.5, spacing / cell),
+    radiusCells: Math.max(0.55, (spacing / cell) * scale),
     baseSmoothPasses: Math.round(1 + flatten * 2),
     baseThreshold: 0.44 - flatten * 0.1,
     waveFlatten: flatten,
-    smoothFromStep: Math.max(4, Math.floor(count * 0.35)),
+    smoothFromStep: Math.max(8, Math.floor(count * 0.5)),
   };
 }
 
@@ -84,7 +86,7 @@ export function createExpansionMode(
   let allReady = false;
   let buildGen = 0;
   let buildingSig: string | null = null;
-  let targetCount = 24;
+  let targetCount = 32;
   let buildParams: ShapeStepParams | null = null;
 
   let growPhase = 0;
@@ -157,10 +159,10 @@ export function createExpansionMode(
 
     const exp = safeExpansion(s);
     const count = contourCount(exp);
-    const cell = gridCell(exp.ringSpacing ?? 5, w, h);
+    const cell = gridCell(exp.ringSpacing ?? 4, w, h);
     const params = shapeParams(exp, cell);
 
-    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${w}|${h}|${cell}|${count}|${exp.ringSpacing}|${exp.waveFlatten}`;
+    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${w}|${h}|${cell}|${count}|${exp.ringSpacing}|${exp.offsetScale}|${exp.waveFlatten}`;
     if (sig === cacheSig && allReady) return;
     if (sig === buildingSig) return;
 
@@ -181,11 +183,9 @@ export function createExpansionMode(
 
       try {
         const t0 = performance.now();
-        let anyPending = false;
 
         for (const gb of glyphBuilds) {
           if (gb.ready) continue;
-          anyPending = true;
 
           let done = 0;
           while (
@@ -217,7 +217,7 @@ export function createExpansionMode(
 
         if (gen !== buildGen) return;
 
-        if (!anyPending || glyphBuilds.every((g) => g.ready)) {
+        if (glyphBuilds.every((g) => g.ready)) {
           allReady = true;
           buildingSig = null;
           return;
@@ -256,21 +256,19 @@ export function createExpansionMode(
     });
   }
 
-  function drawTextLayer(
+  /** Shape0 — только контур буквы (как в референсе). */
+  function drawTextStrokes(
     s: ModeSnapshot,
     col: string,
     lw: number,
     alpha: number,
     font: opentype.Font,
-    fill: string | null,
   ) {
     const fs = s.fontSize;
     ctx.save();
     ctx.globalAlpha = alpha;
     for (const g of lays) {
-      const path = font.getPath(g.char, g.x, g.bl, fs);
-      if (fill) fillGlyphPath(ctx, path, fill);
-      strokeGlyphPath(ctx, path, col, lw);
+      strokeGlyphPath(ctx, font.getPath(g.char, g.x, g.bl, fs), col, lw);
     }
     ctx.restore();
   }
@@ -291,6 +289,7 @@ export function createExpansionMode(
       const alpha = effectOpacity(s.visual);
       const lw = Math.max(0.5, exp.strokeWidth ?? 1);
       const fill = stageFill(s.visual.stageBackground);
+      const col = strokeColor(s, 0);
       const anim = s.animationEnabled && !s.visual.sceneFrozen;
 
       const maxBuiltWaves = Math.max(
@@ -304,30 +303,32 @@ export function createExpansionMode(
         growPhase = 0;
       }
       if (anim && allReady) {
-        growPhase = Math.min(maxBuiltWaves, growPhase + (exp.growSpeed ?? 0.4));
+        growPhase = Math.min(maxBuiltWaves, growPhase + (exp.growSpeed ?? 0.45));
       } else if (!anim) {
         growPhase = maxBuiltWaves;
       }
 
+      const visibleWaves =
+        anim && allReady ? Math.min(maxBuiltWaves, Math.max(0, Math.floor(growPhase))) : maxBuiltWaves;
+
       ctx.save();
       ctx.globalCompositeOperation = 'source-over';
 
-      for (let wave = 1; wave <= maxBuiltWaves; wave++) {
-        if (anim && allReady && wave > Math.floor(growPhase)) break;
-
+      for (let wave = 1; wave <= visibleWaves; wave++) {
         for (let gi = 0; gi < glyphBuilds.length; gi++) {
           const gb = glyphBuilds[gi]!;
           if (wave >= gb.chain.masks.length) continue;
 
-          drawShapeLayer(
+          drawRippleWave(
             ctx,
             gb.chain.masks[wave]!,
+            gb.chain.masks[wave - 1]!,
             gb.chain.loops[wave] ?? [],
             gb.chain.cw,
             gb.chain.ch,
             gb.chain.cell,
             fill,
-            strokeColor(s, gi),
+            col,
             lw,
             alpha,
             fillScratch,
@@ -336,7 +337,7 @@ export function createExpansionMode(
       }
 
       if (s.opentypeFont) {
-        drawTextLayer(s, strokeColor(s, 0), lw, alpha, s.opentypeFont, fill);
+        drawTextStrokes(s, col, lw, alpha, s.opentypeFont);
       }
 
       ctx.restore();

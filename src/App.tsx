@@ -25,7 +25,7 @@ const DEFAULT_WEIGHT =
 function modeHint(mode: LabModeId): string {
   switch (mode) {
     case 'expansion':
-      return 'Каждая буква — своя цепочка волн; заливка фоном + контур; текст всегда сверху';
+      return 'Контур буквы → offset → offset… Каждая волна повторяет предыдущую; текст — только обводка';
     case 'colorStack':
       return 'Залитые копии со смещением — имитация объёма';
     case 'bloom':
