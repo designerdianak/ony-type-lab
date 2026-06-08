@@ -316,7 +316,7 @@ export default function App() {
             <LabeledSlider
               label="Count"
               min={2}
-              max={160}
+              max={100}
               freeInput
               value={expansion.contourCount}
               onChange={(v) =>

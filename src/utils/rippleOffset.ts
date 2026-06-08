@@ -4,7 +4,6 @@ import { smoothBinaryMask } from './iterativeContours';
 /** Скорость бесконечного потока — фиксирована. */
 export const RIPPLE_FLOW_SPEED = 0.4;
 
-const SMOOTH_PASSES = 2;
 const SMOOTH_THRESHOLD = 0.42;
 const BIAS_STRENGTH = 0.85;
 
@@ -98,11 +97,12 @@ export function offsetFromPrevInto(
   biasX: number,
   biasY: number,
   work?: Uint8Array,
+  smoothPasses = gen <= 12 ? 2 : 1,
 ): Uint8Array {
   const r = rippleStepRadius(gen, baseRadius, distribution, falloff);
   const { rx, ry } = rippleEllipseRadii(r, biasX, biasY);
   dilateEllipseInto(prev, out, cw, ch, rx, ry);
-  const smoothed = smoothBinaryMask(out, cw, ch, SMOOTH_PASSES, SMOOTH_THRESHOLD);
+  const smoothed = smoothBinaryMask(out, cw, ch, smoothPasses, SMOOTH_THRESHOLD);
   if (work && work.length === out.length) {
     work.set(smoothed);
     out.set(work);
@@ -112,8 +112,10 @@ export function offsetFromPrevInto(
   return out;
 }
 
-export function rippleGridCell(stepPx: number, w: number, h: number): number {
-  const cell = Math.max(1.5, Math.min(2.8, stepPx * 0.36));
+export function rippleGridCell(stepPx: number, w: number, h: number, count: number): number {
+  let cell = Math.max(1.5, Math.min(2.8, stepPx * 0.36));
+  if (count > 50) cell *= 1.18;
+  if (count > 75) cell *= 1.15;
   const maxCells = 400_000;
   if (Math.ceil(w / cell) * Math.ceil(h / cell) > maxCells) {
     return Math.sqrt((w * h) / maxCells);

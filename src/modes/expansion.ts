@@ -3,7 +3,12 @@ import type opentype from 'opentype.js';
 import { DEFAULT_PLAYGROUND_VISUAL, type ExpansionSettings } from '../types/playground';
 import { clearNeutral } from '../utils/canvas';
 import { rasterizeGlyphMask, type GlyphSlot } from '../utils/contourField';
-import { drawOffsetContourRange, maskHasInk } from '../utils/iterativeContours';
+import {
+  drawOffsetContourCached,
+  extractMaskLoops,
+  maskHasInk,
+  type Pt,
+} from '../utils/iterativeContours';
 import { fillGlyphPath } from '../utils/opentypeCanvas';
 import {
   normalizeExpansion,
@@ -23,8 +28,9 @@ import type { ModeController, ModeSnapshot } from './types';
 type Lay = { char: string; x: number; bl: number };
 
 const MIN_COUNT = 2;
-const MAX_COUNT = 160;
-const GC_MARGIN = 2;
+const MAX_COUNT = 100;
+const GC_MARGIN = 1;
+const MAX_OFFSET_PER_TICK = 2;
 
 function settings(s: ModeSnapshot): ExpansionSettings {
   return normalizeExpansion({
@@ -48,8 +54,9 @@ export function createExpansionMode(
   let lays: Lay[] = [];
   let layoutSig = '';
 
-  /** Shape0…ShapeK — rolling cache цепочки offset. */
   const shapes = new Map<number, Uint8Array>();
+  const loops = new Map<number, Pt[][]>();
+  const maskPool: Uint8Array[] = [];
   let topGen = 0;
   let chainSig = '';
 
@@ -59,19 +66,50 @@ export function createExpansionMode(
   let gridPad = 0;
   let baseRadius = 1;
 
-  let bufA: Uint8Array | null = null;
-  let bufB: Uint8Array | null = null;
+  let workScratch: Uint8Array | null = null;
 
   let flowPhase = 0;
   let flowHead = 0;
   let tickerFn: (() => void) | null = null;
+  let tabVisible = true;
 
   const ringScratch = document.createElement('canvas');
   const segBuf: { x0: number; y0: number; x1: number; y1: number }[] = [];
 
+  const effectLayer = document.createElement('canvas');
+  const effectCtx = effectLayer.getContext('2d');
+  let layerKey = '';
+
+  function onVis() {
+    tabVisible = !document.hidden;
+  }
+
   function viewport() {
     const s = getSnap();
     return { w: Math.max(1, Math.round(s.w)), h: Math.max(1, Math.round(s.h)) };
+  }
+
+  function allocMask(size: number): Uint8Array {
+    const pooled = maskPool.pop();
+    if (pooled && pooled.length === size) return pooled;
+    return new Uint8Array(size);
+  }
+
+  function releaseGen(gen: number) {
+    const m = shapes.get(gen);
+    if (m) maskPool.push(m);
+    shapes.delete(gen);
+    loops.delete(gen);
+  }
+
+  function gcBelow(minGen: number) {
+    for (const g of [...shapes.keys()]) {
+      if (g > 0 && g < minGen) releaseGen(g);
+    }
+  }
+
+  function cacheLoops(gen: number, mask: Uint8Array) {
+    loops.set(gen, extractMaskLoops(mask, gridCw, gridCh, gridCell, segBuf));
   }
 
   function rebuildLayout() {
@@ -102,26 +140,25 @@ export function createExpansionMode(
     if (sig !== layoutSig) {
       layoutSig = sig;
       chainSig = '';
+      layerKey = '';
       flowPhase = 0;
       flowHead = 0;
       rebuildLayout();
     }
   }
 
-  function gcBelow(minGen: number) {
-    for (const g of shapes.keys()) {
-      if (g > 0 && g < minGen) shapes.delete(g);
+  function ensureWork(size: number) {
+    if (!workScratch || workScratch.length !== size) {
+      workScratch = new Uint8Array(size);
     }
   }
 
   function offsetStep(exp: ExpansionSettings, gen: number, prev: Uint8Array): Uint8Array {
-    if (!bufA || bufA.length !== prev.length) {
-      bufA = new Uint8Array(prev.length);
-      bufB = new Uint8Array(prev.length);
-    }
+    ensureWork(prev.length);
+    const out = allocMask(prev.length);
     offsetFromPrevInto(
       prev,
-      bufA,
+      out,
       gen,
       gridCw,
       gridCh,
@@ -130,27 +167,32 @@ export function createExpansionMode(
       exp.falloffStrength,
       exp.horizontalBias,
       exp.verticalBias,
-      bufB ?? undefined,
+      workScratch!,
     );
-    return new Uint8Array(bufA);
+    return out;
   }
 
-  function buildTo(exp: ExpansionSettings, target: number) {
-    while (topGen < target) {
+  function buildTo(exp: ExpansionSettings, target: number, budget = MAX_OFFSET_PER_TICK) {
+    let n = 0;
+    while (topGen < target && n < budget) {
       const next = topGen + 1;
       const prev = shapes.get(topGen);
       if (!prev) break;
-      shapes.set(next, offsetStep(exp, next, prev));
+      const mask = offsetStep(exp, next, prev);
+      shapes.set(next, mask);
+      cacheLoops(next, mask);
       topGen = next;
+      n++;
     }
   }
 
   function resetChain(s: ModeSnapshot) {
     const { w, h } = viewport();
-    shapes.clear();
+    for (const g of shapes.keys()) releaseGen(g);
     topGen = 0;
-    bufA = null;
-    bufB = null;
+    workScratch = null;
+    layerKey = '';
+    maskPool.length = 0;
 
     if (w < 32 || h < 32 || lays.length === 0) return;
 
@@ -158,7 +200,7 @@ export function createExpansionMode(
     const count = contourCount(exp);
     const reach = rippleReach(w, h, exp.horizontalBias, exp.verticalBias);
     const stepPx = reach / count;
-    gridCell = rippleGridCell(stepPx, w, h);
+    gridCell = rippleGridCell(stepPx, w, h, count);
     gridPad = rippleRasterPad(reach, w, h);
     baseRadius = rippleBaseStepCells(w, h, count, gridCell, exp.horizontalBias, exp.verticalBias);
 
@@ -183,14 +225,16 @@ export function createExpansionMode(
 
     gridCw = raster.cw;
     gridCh = raster.ch;
-    shapes.set(0, new Uint8Array(raster.mask));
-    buildTo(exp, count);
+    const shape0 = allocMask(raster.mask.length);
+    shape0.set(raster.mask);
+    shapes.set(0, shape0);
+    buildTo(exp, count, count + 2);
   }
 
   function ensureChain(s: ModeSnapshot) {
     const { w, h } = viewport();
     if (w < 32 || h < 32 || lays.length === 0) {
-      shapes.clear();
+      for (const g of shapes.keys()) releaseGen(g);
       topGen = 0;
       return;
     }
@@ -199,7 +243,7 @@ export function createExpansionMode(
     const count = contourCount(exp);
     const reach = rippleReach(w, h, exp.horizontalBias, exp.verticalBias);
     const stepPx = reach / count;
-    const cell = rippleGridCell(stepPx, w, h);
+    const cell = rippleGridCell(stepPx, w, h, count);
     const pad = rippleRasterPad(reach, w, h);
     const radius = rippleBaseStepCells(w, h, count, cell, exp.horizontalBias, exp.verticalBias);
 
@@ -225,7 +269,62 @@ export function createExpansionMode(
     chainSig = sig;
     flowPhase = 0;
     flowHead = 0;
+    layerKey = '';
     resetChain(s);
+  }
+
+  function strokeSig(exp: ExpansionSettings, first: number, last: number): string {
+    if (exp.paletteMode === 'custom') {
+      const parts: string[] = [];
+      for (let g = first; g <= last; g++) parts.push(rippleStrokeColor(exp, g));
+      return parts.join(',');
+    }
+    return exp.strokeColor;
+  }
+
+  function ringFillValue(exp: ExpansionSettings, stageBg: string): string | null {
+    const ringFill = rippleRingFill(exp);
+    if (stageBg === 'transparent') return null;
+    if (ringFill === 'transparent') return stageBg;
+    return ringFill;
+  }
+
+  function paintEffectLayer(
+    exp: ExpansionSettings,
+    first: number,
+    last: number,
+    fill: string | null,
+    lw: number,
+    alpha: number,
+    w: number,
+    h: number,
+  ) {
+    const key = `${first}|${last}|${fill}|${lw}|${alpha}|${strokeSig(exp, first, last)}|${gridPad}|${gridCell}`;
+    if (key === layerKey && effectLayer.width === w && effectLayer.height === h) return;
+    if (!effectCtx) return;
+
+    layerKey = key;
+    if (effectLayer.width !== w) effectLayer.width = w;
+    if (effectLayer.height !== h) effectLayer.height = h;
+    effectCtx.clearRect(0, 0, w, h);
+
+    drawOffsetContourCached(
+      effectCtx,
+      (g) => shapes.get(g) ?? null,
+      (g) => loops.get(g) ?? null,
+      first,
+      last,
+      gridCw,
+      gridCh,
+      gridCell,
+      -gridPad,
+      -gridPad,
+      fill,
+      (g) => rippleStrokeColor(exp, g),
+      lw,
+      alpha,
+      ringScratch,
+    );
   }
 
   function drawTextTop(textColor: string, alpha: number, font: opentype.Font) {
@@ -252,49 +351,30 @@ export function createExpansionMode(
       if (!shapes.has(0) || topGen < 1 || lays.length === 0) return;
 
       const alpha = effectOpacity(s.visual);
-      const ringFill = rippleRingFill(exp);
       const lw = Math.max(0.35, exp.strokeWidth);
+      const fill = ringFillValue(exp, s.visual.stageBackground);
 
       let first = 1;
       let last = count;
 
-      if (!s.visual.sceneFrozen) {
+      if (!s.visual.sceneFrozen && tabVisible) {
         flowPhase += RIPPLE_FLOW_SPEED * (gsap.ticker.deltaRatio() / 60) * 9;
         const head = Math.floor(flowPhase);
         if (head !== flowHead) {
           flowHead = head;
-          buildTo(exp, head + count);
+          layerKey = '';
+          buildTo(exp, head + count, MAX_OFFSET_PER_TICK);
           gcBelow(head - GC_MARGIN);
         }
         first = head + 1;
         last = head + count;
-        buildTo(exp, last);
+        if (topGen < last) buildTo(exp, last, MAX_OFFSET_PER_TICK);
       }
 
-      const fill =
-        ringFill === 'transparent' || s.visual.stageBackground === 'transparent'
-          ? s.visual.stageBackground === 'transparent'
-            ? null
-            : ringFill
-          : ringFill;
-
-      drawOffsetContourRange(
-        ctx,
-        (g) => shapes.get(g) ?? null,
-        first,
-        last,
-        gridCw,
-        gridCh,
-        gridCell,
-        -gridPad,
-        -gridPad,
-        fill,
-        (g) => rippleStrokeColor(exp, g),
-        lw,
-        alpha,
-        segBuf,
-        ringScratch,
-      );
+      paintEffectLayer(exp, first, last, fill, lw, alpha, w, h);
+      if (effectCtx && effectLayer.width > 0) {
+        ctx.drawImage(effectLayer, 0, 0);
+      }
 
       if (s.opentypeFont) {
         drawTextTop(s.visual.monochromeColor, alpha, s.opentypeFont);
@@ -306,20 +386,23 @@ export function createExpansionMode(
 
   return {
     start() {
+      document.addEventListener('visibilitychange', onVis);
+      tabVisible = !document.hidden;
       layoutSig = '';
       chainSig = '';
-      shapes.clear();
+      layerKey = '';
+      for (const g of shapes.keys()) releaseGen(g);
       topGen = 0;
       flowPhase = 0;
       flowHead = 0;
-      bufA = null;
-      bufB = null;
+      workScratch = null;
       rebuildLayout();
       ensureChain(getSnap());
       tickerFn = () => tick();
       gsap.ticker.add(tickerFn);
     },
     stop() {
+      document.removeEventListener('visibilitychange', onVis);
       if (tickerFn) gsap.ticker.remove(tickerFn);
       tickerFn = null;
     },
