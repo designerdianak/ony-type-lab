@@ -949,7 +949,7 @@ export default function App() {
               onChange={(v) => setVisual((s) => ({ ...s, trailWalker: { ...s.trailWalker, worminess: v } }))}
             />
             <p className="lab__hint">
-              0% — плавные изгибы; 100% — рывками, как принтер по углам.
+              0% — плавные изгибы; 100% — зигзаг сегментами 20–100 px в случайные стороны.
             </p>
             <div className="lab__field lab__field--row">
               <label htmlFor="walk-color">Цвет следа</label>

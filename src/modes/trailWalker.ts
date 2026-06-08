@@ -41,7 +41,8 @@ export function createTrailWalkerMode(
   let sampleY = 0;
   let angle = 0;
   let turnT = 0;
-  let jerkAccum = 0;
+  let jerkSegDist = 0;
+  let jerkSegTarget = 60;
   let stamps: TrailPt[] = [];
   let lastTick = performance.now();
 
@@ -101,7 +102,8 @@ export function createTrailWalkerMode(
     sampleY = y;
     angle = Math.random() * Math.PI * 2;
     turnT = 0;
-    jerkAccum = 0;
+    jerkSegDist = 0;
+    jerkSegTarget = nextJerkSegmentTarget(1);
     stamps = [];
   }
 
@@ -151,13 +153,16 @@ export function createTrailWalkerMode(
     }
   }
 
-  function stampDrawPos(
-    i: number,
-    n: number,
-    smear: boolean,
-  ): { x: number; y: number; alphaMul: number } {
+  function nextJerkSegmentTarget(jerky: number): number {
+    const min = 20;
+    const max = 100;
+    const len = min + Math.random() * (max - min);
+    return len / Math.max(0.12, jerky);
+  }
+
+  function stampDrawPos(i: number, n: number, smear: boolean): { x: number; y: number } {
     const p = stamps[i]!;
-    if (!smear || n < 2) return { x: p.x, y: p.y, alphaMul: 1 };
+    if (!smear || n < 2) return { x: p.x, y: p.y };
 
     const newer = stamps[i + 1] ?? { x, y };
     const dx = newer.x - p.x;
@@ -168,12 +173,10 @@ export function createTrailWalkerMode(
 
     const age = 1 - (i + 1) / n;
     const spread = age * age * offsetDeltaPx * 2.8;
-    const alphaMul = 1 - age * 0.6;
 
     return {
       x: p.x - ux * spread,
       y: p.y - uy * spread,
-      alphaMul,
     };
   }
 
@@ -185,19 +188,16 @@ export function createTrailWalkerMode(
     angle +=
       (Math.sin(turnT * 2.1) * 0.12 + Math.cos(turnT * 0.7) * 0.08) * smooth;
 
-    if (jerky > 0.02) {
-      jerkAccum += dt;
-      const snapInterval = Math.max(0.06, 0.42 - jerky * 0.34);
-      if (jerkAccum >= snapInterval) {
-        jerkAccum = 0;
-        const steps = 4 + Math.round(jerky * 4);
-        const snap = (Math.floor(Math.random() * steps) / steps) * Math.PI * 2;
-        angle = jerky > 0.92 ? snap : angle * (1 - jerky) + snap * jerky;
-      }
-    }
-
     x += Math.cos(angle) * speed;
     y += Math.sin(angle) * speed;
+    jerkSegDist += speed;
+
+    if (jerky > 0.02 && jerkSegDist >= jerkSegTarget) {
+      jerkSegDist = 0;
+      jerkSegTarget = nextJerkSegmentTarget(jerky);
+      const snap = Math.random() * Math.PI * 2;
+      angle = jerky > 0.92 ? snap : angle * (1 - jerky) + snap * jerky;
+    }
 
     if (x < pad) {
       x = pad;
@@ -291,7 +291,7 @@ export function createTrailWalkerMode(
 
     if (offsetPath2D) {
       for (let i = 0; i < stampN; i++) {
-        const { x: sx, y: sy, alphaMul } = stampDrawPos(i, stampN, smear);
+        const { x: sx, y: sy } = stampDrawPos(i, stampN, smear);
         const fill =
           trailColor ??
           colorForGlyph({
@@ -302,7 +302,7 @@ export function createTrailWalkerMode(
             total: stampN,
           });
 
-        let trailAlpha = alpha * alphaMul;
+        let trailAlpha = alpha;
         if (trailMode === 'fade') {
           trailAlpha *= ((i + 1) / Math.max(1, stampN)) * 0.95;
         }
