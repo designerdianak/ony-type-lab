@@ -284,7 +284,7 @@ export function createExpansionMode(
     h: number,
     frozen: boolean,
   ) {
-    const phaseKey = frozen ? '0' : phase.toFixed(2);
+    const phaseKey = frozen ? '0' : phase.toFixed(3);
     const key = `${phaseKey}|${count}|${topGen}|${lw}|${alpha}|${colorSig(exp, count)}`;
     if (layerReady && key === layerKey && effectLayer.width === w && effectLayer.height === h) return;
     if (!effectCtx) return;
@@ -299,6 +299,7 @@ export function createExpansionMode(
     if (visibleRings < 1) return;
 
     const useStrokes = rippleUsesStrokes(exp);
+    const drawStyle = useStrokes ? 'ring' : 'solid';
     drawVectorRippleCarousel(
       effectCtx,
       (g) => path2DCache.get(g) ?? null,
@@ -306,7 +307,7 @@ export function createExpansionMode(
       visibleRings,
       phase,
       shapeCenter,
-      (g) => stepPx(exp, g, w, h, count),
+      drawStyle,
       (g) => ringFillForGen(exp, g, stageBg),
       useStrokes ? () => rippleStrokeColor(exp) : null,
       lw,

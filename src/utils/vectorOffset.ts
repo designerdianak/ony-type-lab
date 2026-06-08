@@ -302,6 +302,24 @@ function fillRingPath2D(
   ctx.restore();
 }
 
+function fillSolidPath2D(
+  ctx: CanvasRenderingContext2D,
+  path: Path2D,
+  cx: number,
+  cy: number,
+  growth: number,
+  fill: string,
+  alpha: number,
+) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = fill;
+  withGrowthTransform(ctx, cx, cy, growth, () => {
+    ctx.fill(path, 'evenodd');
+  });
+  ctx.restore();
+}
+
 function strokePath2D(
   ctx: CanvasRenderingContext2D,
   path: Path2D,
@@ -322,6 +340,19 @@ function strokePath2D(
     ctx.stroke(path);
   });
   ctx.restore();
+}
+
+/** Плавное появление слоя: от размера gen−1 к полному gen. */
+function rippleEmergenceGrowth(
+  gen: number,
+  frac: number,
+  radiusAt: (gen: number) => number,
+): number {
+  const rOut = Math.max(1, radiusAt(gen));
+  const rIn = Math.max(1, radiusAt(gen - 1));
+  const minScale = rIn / rOut;
+  if (frac < 0.0005) return minScale;
+  return minScale + frac * (1 - minScale);
 }
 
 function fillRingPaths(
@@ -346,9 +377,18 @@ function strokePaths(
   strokePath2D(ctx, pathsToPath2D(paths), 0, 0, 1, stroke, lineWidth, alpha);
 }
 
+export type RippleDrawStyle = 'ring' | 'solid';
+
+/** Фаза роста для gen-го слоя — волна бежит от центра наружу. */
+function staggeredFrac(phase: number, gen: number, ringCount: number): number {
+  const t = phase - (gen - 1) / ringCount;
+  return t - Math.floor(t);
+}
+
 /**
- * Карусель: count колец циклически смещаются наружу.
- * phase растёт непрерывно; целая часть — сдвиг слотов, дробная — плавный выход из центра.
+ * Поток offset-слоёв: поколения 1…count зафиксированы в пространстве,
+ * волна роста смещена по gen (как Cavalry duplicator + stagger).
+ * solid — сплошная заливка силуэта; ring — кольцо + опционально обводка.
  */
 export function drawVectorRippleCarousel(
   ctx: CanvasRenderingContext2D,
@@ -357,7 +397,7 @@ export function drawVectorRippleCarousel(
   ringCount: number,
   phase: number,
   center: { cx: number; cy: number },
-  stepForGen: (outerGen: number) => number,
+  drawStyle: RippleDrawStyle,
   ringFillForGen: (outerGen: number) => string | null,
   strokeForGen: ((gen: number) => string) | null,
   lineWidth: number,
@@ -365,35 +405,37 @@ export function drawVectorRippleCarousel(
 ) {
   if (ringCount < 1) return;
 
-  const step = ((Math.floor(phase) % ringCount) + ringCount) % ringCount;
-  const frac = phase - Math.floor(phase);
+  const drawOrder =
+    drawStyle === 'solid'
+      ? Array.from({ length: ringCount }, (_, i) => ringCount - i)
+      : Array.from({ length: ringCount }, (_, i) => i + 1);
 
-  for (let slot = 0; slot < ringCount; slot++) {
-    const innerGen = (slot + step) % ringCount;
-    const outerGen = innerGen + 1;
-    const inner = pathAt(innerGen);
-    const outer = pathAt(outerGen);
-    if (!inner || !outer) continue;
+  for (const gen of drawOrder) {
+    const outer = pathAt(gen);
+    const fill = ringFillForGen(gen);
+    if (!outer || !fill) continue;
 
-    const fill = ringFillForGen(outerGen);
-    if (!fill) continue;
+    const frac = staggeredFrac(phase, gen, ringCount);
+    const growth = rippleEmergenceGrowth(gen, frac, radiusAt);
 
-    const r = Math.max(1, radiusAt(innerGen));
-    const growth = frac > 0.0005 ? 1 + frac * (stepForGen(outerGen) / r) : 1;
+    if (drawStyle === 'solid') {
+      fillSolidPath2D(ctx, outer, center.cx, center.cy, growth, fill, alpha);
+      continue;
+    }
+
+    const inner = pathAt(gen - 1);
+    if (!inner) continue;
     fillRingPath2D(ctx, outer, inner, center.cx, center.cy, growth, fill, alpha);
   }
 
-  if (!strokeForGen) return;
+  if (!strokeForGen || drawStyle !== 'ring') return;
 
-  for (let slot = 0; slot < ringCount; slot++) {
-    const innerGen = (slot + step) % ringCount;
-    const outerGen = innerGen + 1;
-    const outer = pathAt(outerGen);
+  for (let gen = 1; gen <= ringCount; gen++) {
+    const outer = pathAt(gen);
     if (!outer) continue;
-
-    const r = Math.max(1, radiusAt(innerGen));
-    const growth = frac > 0.0005 ? 1 + frac * (stepForGen(outerGen) / r) : 1;
-    strokePath2D(ctx, outer, center.cx, center.cy, growth, strokeForGen(outerGen), lineWidth, alpha);
+    const frac = staggeredFrac(phase, gen, ringCount);
+    const growth = rippleEmergenceGrowth(gen, frac, radiusAt);
+    strokePath2D(ctx, outer, center.cx, center.cy, growth, strokeForGen(gen), lineWidth, alpha);
   }
 }
 
