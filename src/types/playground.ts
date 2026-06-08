@@ -110,6 +110,9 @@ export interface ElasticSettings {
 /** fade — след затухает по прозрачности; copies — фиксированное число offset-копий. */
 export type TrailWalkerTrailMode = 'fade' | 'copies';
 
+/** uniform — равный шаг; smear — хвост следа разъезжается (смаз). */
+export type TrailWalkerStampSpacing = 'uniform' | 'smear';
+
 /** Блуждающий текст со следом. */
 export interface TrailWalkerSettings {
   speed: number;
@@ -117,6 +120,9 @@ export interface TrailWalkerSettings {
   worminess: number;
   trailColor: string;
   trailMode: TrailWalkerTrailMode;
+  /** Доля кегля — толщина offset-«краски». */
+  offsetThickness: number;
+  stampSpacing: TrailWalkerStampSpacing;
 }
 
 export interface SoftBodySettings {
@@ -228,6 +234,8 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
     worminess: 0.28,
     trailColor: '#e91e8c',
     trailMode: 'copies',
+    offsetThickness: 0.22,
+    stampSpacing: 'uniform',
   },
   softBody: {
     overlap: true,

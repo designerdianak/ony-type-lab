@@ -18,11 +18,14 @@ import type { ModeController, ModeSnapshot } from './types';
 type TrailPt = { x: number; y: number };
 type Lay = { char: string; x: number; bl: number };
 
-/** Толщина «краски» AGOF — одна offset-копия за текстом. */
-const OFFSET_RATIO = 0.22;
-/** Перекрытие штампов следа (доля шага offset). */
+/** Перекрытие штампов при равномерном шаге (доля шага offset). */
 const STAMP_OVERLAP = 0.38;
 const MAX_STAMPS_PER_FRAME = 32;
+
+function offsetDeltaFromSetting(fontSize: number, thickness: number): number {
+  const ratio = Math.max(0.04, Math.min(0.55, thickness));
+  return Math.max(1.5, fontSize * ratio);
+}
 
 export function createTrailWalkerMode(
   _canvas: HTMLCanvasElement,
@@ -30,6 +33,7 @@ export function createTrailWalkerMode(
   getSnap: () => ModeSnapshot,
 ): ModeController {
   let layoutSig = '';
+  let offsetSig = '';
   let tickerFn: (() => void) | null = null;
   let x = 0;
   let y = 0;
@@ -37,6 +41,7 @@ export function createTrailWalkerMode(
   let sampleY = 0;
   let angle = 0;
   let turnT = 0;
+  let jerkAccum = 0;
   let stamps: TrailPt[] = [];
   let lastTick = performance.now();
 
@@ -76,7 +81,7 @@ export function createTrailWalkerMode(
     if (!shape0.length) return;
 
     shapeAnchor = pathsBoundsCenter(shape0);
-    offsetDeltaPx = Math.max(2, layoutFontSize * OFFSET_RATIO);
+    offsetDeltaPx = offsetDeltaFromSetting(layoutFontSize, s.visual.trailWalker.offsetThickness);
     const offsetShape = offsetPaths(clipper, shape0, offsetDeltaPx);
     if (!offsetShape.length) return;
 
@@ -96,6 +101,7 @@ export function createTrailWalkerMode(
     sampleY = y;
     angle = Math.random() * Math.PI * 2;
     turnT = 0;
+    jerkAccum = 0;
     stamps = [];
   }
 
@@ -107,11 +113,20 @@ export function createTrailWalkerMode(
 
   function ensure(s: ModeSnapshot) {
     const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${s.lineHeight}|${s.w}|${s.h}|${s.fontUrl}`;
+    const offSig = `${sig}|${s.visual.trailWalker.offsetThickness}`;
+
     if (sig !== layoutSig) {
       layoutSig = sig;
+      offsetSig = offSig;
       reset(s);
       return;
     }
+
+    if (offSig !== offsetSig) {
+      offsetSig = offSig;
+      rebuildOffsetShape(s);
+    }
+
     if (clipperReady && !offsetPath2D && s.opentypeFont && lays.length > 0) {
       rebuildOffsetShape(s);
       resetPosition();
@@ -133,6 +148,72 @@ export function createTrailWalkerMode(
       sampleY += uy * step;
       stamps.push({ x: sampleX, y: sampleY });
       while (stamps.length > maxTrail) stamps.shift();
+    }
+  }
+
+  function stampDrawPos(
+    i: number,
+    n: number,
+    smear: boolean,
+  ): { x: number; y: number; alphaMul: number } {
+    const p = stamps[i]!;
+    if (!smear || n < 2) return { x: p.x, y: p.y, alphaMul: 1 };
+
+    const newer = stamps[i + 1] ?? { x, y };
+    const dx = newer.x - p.x;
+    const dy = newer.y - p.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len;
+    const uy = dy / len;
+
+    const age = 1 - (i + 1) / n;
+    const spread = age * age * offsetDeltaPx * 2.8;
+    const alphaMul = 1 - age * 0.6;
+
+    return {
+      x: p.x - ux * spread,
+      y: p.y - uy * spread,
+      alphaMul,
+    };
+  }
+
+  function updateMotion(dt: number, worm: number, speed: number, pad: number, w: number, h: number) {
+    const smooth = 1 - worm;
+    const jerky = worm;
+
+    turnT += dt * (1.2 + smooth * 2.8);
+    angle +=
+      (Math.sin(turnT * 2.1) * 0.12 + Math.cos(turnT * 0.7) * 0.08) * smooth;
+
+    if (jerky > 0.02) {
+      jerkAccum += dt;
+      const snapInterval = Math.max(0.06, 0.42 - jerky * 0.34);
+      if (jerkAccum >= snapInterval) {
+        jerkAccum = 0;
+        const steps = 4 + Math.round(jerky * 4);
+        const snap = (Math.floor(Math.random() * steps) / steps) * Math.PI * 2;
+        angle = jerky > 0.92 ? snap : angle * (1 - jerky) + snap * jerky;
+      }
+    }
+
+    x += Math.cos(angle) * speed;
+    y += Math.sin(angle) * speed;
+
+    if (x < pad) {
+      x = pad;
+      angle = Math.PI - angle;
+    }
+    if (x > w - pad) {
+      x = w - pad;
+      angle = Math.PI - angle;
+    }
+    if (y < pad) {
+      y = pad;
+      angle = -angle;
+    }
+    if (y > h - pad) {
+      y = h - pad;
+      angle = -angle;
     }
   }
 
@@ -193,32 +274,11 @@ export function createTrailWalkerMode(
         ? Math.max(1, Math.round(tw.trailLength))
         : Math.max(4, Math.round(tw.trailLength));
     const speed = (40 + tw.speed * 220) * dt;
-    const worm = tw.worminess;
+    const worm = Math.max(0, Math.min(1, tw.worminess));
+    const smear = tw.stampSpacing === 'smear';
 
     if (s.visual.animationEnabled && !s.visual.sceneFrozen) {
-      turnT += dt * (0.9 + worm * 2.8);
-      angle += Math.sin(turnT * 1.35) * worm * 0.1 + Math.cos(turnT * 0.52) * worm * 0.07;
-      x += Math.cos(angle) * speed;
-      y += Math.sin(angle) * speed;
-
-      const pad = s.fontSize;
-      if (x < pad) {
-        x = pad;
-        angle = Math.PI - angle;
-      }
-      if (x > s.w - pad) {
-        x = s.w - pad;
-        angle = Math.PI - angle;
-      }
-      if (y < pad) {
-        y = pad;
-        angle = -angle;
-      }
-      if (y > s.h - pad) {
-        y = s.h - pad;
-        angle = -angle;
-      }
-
+      updateMotion(dt, worm, speed, s.fontSize, s.w, s.h);
       pushStampsAlongPath(maxTrail);
     }
 
@@ -231,7 +291,7 @@ export function createTrailWalkerMode(
 
     if (offsetPath2D) {
       for (let i = 0; i < stampN; i++) {
-        const p = stamps[i]!;
+        const { x: sx, y: sy, alphaMul } = stampDrawPos(i, stampN, smear);
         const fill =
           trailColor ??
           colorForGlyph({
@@ -242,12 +302,12 @@ export function createTrailWalkerMode(
             total: stampN,
           });
 
-        let trailAlpha = alpha;
+        let trailAlpha = alpha * alphaMul;
         if (trailMode === 'fade') {
-          trailAlpha = alpha * ((i + 1) / Math.max(1, stampN)) * 0.95;
+          trailAlpha *= ((i + 1) / Math.max(1, stampN)) * 0.95;
         }
 
-        drawOffsetAt(p.x, p.y, fill, trailAlpha);
+        drawOffsetAt(sx, sy, fill, trailAlpha);
       }
 
       const headFill =
@@ -287,11 +347,13 @@ export function createTrailWalkerMode(
     start() {
       clipperReady = false;
       offsetPath2D = null;
+      offsetSig = '';
       lastTick = performance.now();
 
       const snap = getSnap();
       reset(snap);
       layoutSig = `${snap.text}|${snap.fontCss}|${snap.fontSize}|${snap.letterSpacing}|${snap.lineHeight}|${snap.w}|${snap.h}|${snap.fontUrl}`;
+      offsetSig = `${layoutSig}|${snap.visual.trailWalker.offsetThickness}`;
 
       initVectorClipper()
         .then(() => {

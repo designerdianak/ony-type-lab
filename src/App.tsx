@@ -881,6 +881,45 @@ export default function App() {
                 </RoundButton>
               </div>
             </div>
+            <div className="lab__field">
+              <span>Шаг копий</span>
+              <div className="lab__row">
+                <RoundButton
+                  active={(visual.trailWalker.stampSpacing ?? 'uniform') === 'uniform'}
+                  onClick={() =>
+                    setVisual((s) => ({
+                      ...s,
+                      trailWalker: { ...s.trailWalker, stampSpacing: 'uniform' },
+                    }))
+                  }
+                >
+                  Равномерный
+                </RoundButton>
+                <RoundButton
+                  active={visual.trailWalker.stampSpacing === 'smear'}
+                  onClick={() =>
+                    setVisual((s) => ({
+                      ...s,
+                      trailWalker: { ...s.trailWalker, stampSpacing: 'smear' },
+                    }))
+                  }
+                >
+                  Смаз
+                </RoundButton>
+              </div>
+            </div>
+            <LabeledSlider
+              label="Толщина offset"
+              min={0.05}
+              max={0.5}
+              step={0.01}
+              freeInput
+              value={visual.trailWalker.offsetThickness ?? 0.22}
+              format={(n) => n.toFixed(2)}
+              onChange={(v) =>
+                setVisual((s) => ({ ...s, trailWalker: { ...s.trailWalker, offsetThickness: v } }))
+              }
+            />
             <LabeledSlider
               label="Скорость"
               min={0.05}
@@ -900,15 +939,18 @@ export default function App() {
               onChange={(v) => setVisual((s) => ({ ...s, trailWalker: { ...s.trailWalker, trailLength: v } }))}
             />
             <LabeledSlider
-              label="«Червячок»"
+              label="Червячок"
               min={0}
               max={1}
-              step={0.02}
+              step={0.01}
               freeInput
               value={visual.trailWalker.worminess}
-              format={(n) => n.toFixed(2)}
+              format={(n) => `${Math.round(n * 100)}%`}
               onChange={(v) => setVisual((s) => ({ ...s, trailWalker: { ...s.trailWalker, worminess: v } }))}
             />
+            <p className="lab__hint">
+              0% — плавные изгибы; 100% — рывками, как принтер по углам.
+            </p>
             <div className="lab__field lab__field--row">
               <label htmlFor="walk-color">Цвет следа</label>
               <input
