@@ -356,60 +356,6 @@ export type RippleDrawStyle = 'ring' | 'solid';
 
 type RippleSlot = { innerGen: number; outerGen: number };
 
-/**
- * Рост колец: каждый слой плавно offset-ится от gen к gen+1;
- * хвостовой контур возвращается в начало (stagger по flowPhase).
- */
-export function drawVectorRippleGrow(
-  ctx: CanvasRenderingContext2D,
-  ringCount: number,
-  flowPhase: number,
-  innerAt: (gen: number) => Path2D | null,
-  outerAt: (gen: number, frac: number) => Path2D | null,
-  drawStyle: RippleDrawStyle,
-  ringFillForGen: (outerGen: number) => string | null,
-  strokeForGen: ((gen: number) => string) | null,
-  lineWidth: number,
-  alpha: number,
-) {
-  if (ringCount < 1) return;
-
-  const slots: { g: number; frac: number; outerGen: number }[] = [];
-  for (let slot = 0; slot < ringCount; slot++) {
-    const frac = (flowPhase + slot / ringCount) % 1;
-    slots.push({ g: slot, frac, outerGen: slot + 1 });
-  }
-
-  const order =
-    drawStyle === 'solid'
-      ? [...slots].sort((a, b) => b.outerGen - a.outerGen)
-      : slots;
-
-  for (const { g, frac, outerGen } of order) {
-    const outer = outerAt(g, frac);
-    const fill = ringFillForGen(outerGen);
-    if (!outer || !fill || frac < 0.015) continue;
-
-    if (drawStyle === 'solid') {
-      fillSolidPath2D(ctx, outer, 0, 0, fill, alpha);
-      continue;
-    }
-
-    const inner = innerAt(g);
-    if (!inner) continue;
-    fillRingPath2D(ctx, outer, inner, 0, 0, fill, alpha);
-  }
-
-  if (!strokeForGen || drawStyle !== 'ring') return;
-
-  for (const { g, frac, outerGen } of slots) {
-    if (frac < 0.015) continue;
-    const outer = outerAt(g, frac);
-    if (!outer) continue;
-    strokePath2D(ctx, outer, 0, 0, strokeForGen(outerGen), lineWidth, alpha);
-  }
-}
-
 /** Все кольца/заливки offset-цепочки без анимации. */
 export function drawVectorRippleStatic(
   ctx: CanvasRenderingContext2D,

@@ -1,9 +1,6 @@
 import type { ExpansionSettings, RippleDistribution } from '../types/playground';
 import { smoothBinaryMask } from './iterativeContours';
 
-/** Скорость роста колец (полный цикл слота 0 ≈ 1 / speed сек). */
-export const RIPPLE_FLOW_SPEED = 0.32;
-
 /** Доля шага offset, на которую смещается позиция кольца при bias = ±1. */
 export const RIPPLE_BIAS_SHIFT = 0.42;
 
