@@ -3,7 +3,7 @@ import type { Paths } from 'js-angusj-clipper';
 import {
   colorForGlyph,
   gradientAt,
-  lerpColor,
+  hsla,
   mulberry32,
   randomVividPalette,
 } from '../utils/colors';
@@ -163,7 +163,7 @@ export function createGradientFlowMode(
     };
   }
 
-  function trailColorAt(s: ModeSnapshot, t: number, smooth: boolean): string {
+  function trailColorAt(s: ModeSnapshot, t: number): string {
     const e = s.visual.elastic;
     const pal = palette(s);
     if (e.randomGradient) return gradientAt(pal, t);
@@ -176,11 +176,44 @@ export function createGradientFlowMode(
         total: 48,
       });
     }
-    if (smooth) return lerpColor(e.colorA, e.colorB, t);
     return gradientAt([e.colorA, e.colorB, e.colorC], t);
   }
 
-  function fillSmoothGradient(
+  function layerCount(s: ModeSnapshot): number {
+    const e = s.visual.elastic;
+    return Math.max(28, Math.round(e.flowLength * 2.8));
+  }
+
+  /** Плотнее слои — силуэт сливается в сплошной шлейф. */
+  function denseTrailParams(layers: number, tx: number, ty: number, density = 8) {
+    return {
+      layers: layers * density,
+      tx: tx / density,
+      ty: ty / density,
+    };
+  }
+
+  function capLayersForCanvas(
+    cx: number,
+    cy: number,
+    tx: number,
+    ty: number,
+    layers: number,
+    w: number,
+    h: number,
+  ): number {
+    const pad = 4;
+    for (let i = layers; i >= 1; i--) {
+      const px = cx + tx * i;
+      const py = cy + ty * i;
+      if (px >= pad && px <= w - pad && py >= pad && py <= h - pad) {
+        return i;
+      }
+    }
+    return 1;
+  }
+
+  function smoothGradientLine(
     target: CanvasRenderingContext2D,
     s: ModeSnapshot,
     ax: number,
@@ -188,23 +221,34 @@ export function createGradientFlowMode(
     bx: number,
     by: number,
     phase: number,
-    w: number,
-    h: number,
-  ) {
-    const stops = 24;
-    const grad = target.createLinearGradient(ax, ay, bx, by);
-    for (let i = 0; i <= stops; i++) {
-      const pos = i / stops;
-      const t = (pos + phase) % 1;
-      grad.addColorStop(pos, trailColorAt(s, t, true));
-    }
-    target.fillStyle = grad;
-    target.fillRect(0, 0, w, h);
-  }
-
-  function layerCount(s: ModeSnapshot): number {
+  ): CanvasGradient {
     const e = s.visual.elastic;
-    return Math.max(28, Math.round(e.flowLength * 2.8));
+    const len = Math.hypot(bx - ax, by - ay) || 1;
+    const ux = (bx - ax) / len;
+    const uy = (by - ay) / len;
+    const shift = phase * len;
+    const grad = target.createLinearGradient(
+      ax + ux * shift,
+      ay + uy * shift,
+      bx + ux * shift,
+      by + uy * shift,
+    );
+
+    if (e.randomGradient) {
+      const pal = palette(s);
+      grad.addColorStop(0, pal[0]!);
+      grad.addColorStop(1, pal[pal.length - 1]!);
+    } else if (s.visual.colorMode === 'rainbow') {
+      const base = s.visual.rainbowSeed * 41 + phase * 360;
+      grad.addColorStop(0, hsla(base, 90, 54, 1));
+      grad.addColorStop(0.35, hsla(base + 70, 90, 54, 1));
+      grad.addColorStop(0.65, hsla(base + 170, 90, 54, 1));
+      grad.addColorStop(1, hsla(base + 260, 90, 54, 1));
+    } else {
+      grad.addColorStop(0, e.colorA);
+      grad.addColorStop(1, e.colorB);
+    }
+    return grad;
   }
 
   function setupSurface(layer: HTMLCanvasElement, layerCtx: CanvasRenderingContext2D, w: number, h: number) {
@@ -234,15 +278,18 @@ export function createGradientFlowMode(
     layers: number,
     tx: number,
     ty: number,
+    w: number,
+    h: number,
   ) {
     const bands = Math.max(6, Math.min(28, Math.round(layers / 3)));
 
     for (const line of lines) {
-      for (let i = layers; i >= 1; i--) {
-        const depth = i / layers;
+      const capped = capLayersForCanvas(line.anchor.cx, line.anchor.cy, tx, ty, layers, w, h);
+      for (let i = capped; i >= 1; i--) {
+        const depth = i / capped;
         const tRaw = (depth + phase) % 1;
         const t = Math.floor(tRaw * bands) / bands;
-        const fill = trailColorAt(s, t, false);
+        const fill = trailColorAt(s, t);
 
         trailCtx!.save();
         trailCtx!.globalAlpha = alpha;
@@ -259,16 +306,41 @@ export function createGradientFlowMode(
     s: ModeSnapshot,
     phase: number,
     alpha: number,
-    layers: number,
-    tx: number,
-    ty: number,
+    baseLayers: number,
+    baseTx: number,
+    baseTy: number,
     w: number,
     h: number,
   ) {
-    if (!maskCtx || !gradCtx) return;
+    if (!maskCtx || !gradCtx || !trailCtx) return;
+
+    const dpr = canvasDpr(w, ctx.canvas);
+    const pw = Math.max(1, Math.round(w * dpr));
+    const ph = Math.max(1, Math.round(h * dpr));
+    if (maskLayer.width !== pw) maskLayer.width = pw;
+    if (maskLayer.height !== ph) maskLayer.height = ph;
+    if (gradLayer.width !== pw) gradLayer.width = pw;
+    if (gradLayer.height !== ph) gradLayer.height = ph;
+
+    trailCtx.save();
+    trailCtx.beginPath();
+    trailCtx.rect(0, 0, w, h);
+    trailCtx.clip();
 
     for (const line of lines) {
+      const capped = capLayersForCanvas(
+        line.anchor.cx,
+        line.anchor.cy,
+        baseTx,
+        baseTy,
+        baseLayers,
+        w,
+        h,
+      );
+      const { layers, tx, ty } = denseTrailParams(capped, baseTx, baseTy);
+
       setupSurface(maskLayer, maskCtx, w, h);
+      maskCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
       maskCtx.clearRect(0, 0, w, h);
       maskCtx.fillStyle = '#fff';
       for (let i = 1; i <= layers; i++) {
@@ -279,28 +351,31 @@ export function createGradientFlowMode(
         maskCtx.restore();
       }
 
-      setupSurface(gradLayer, gradCtx, w, h);
-      gradCtx.clearRect(0, 0, w, h);
-      fillSmoothGradient(
-        gradCtx,
-        s,
-        line.anchor.cx,
-        line.anchor.cy,
-        line.anchor.cx + tx * layers,
-        line.anchor.cy + ty * layers,
-        phase,
-        w,
-        h,
-      );
+      const ax = line.anchor.cx * dpr;
+      const ay = line.anchor.cy * dpr;
+      const bx = (line.anchor.cx + baseTx * capped) * dpr;
+      const by = (line.anchor.cy + baseTy * capped) * dpr;
+
+      gradCtx.setTransform(1, 0, 0, 1, 0, 0);
+      if (gradLayer.width !== pw) gradLayer.width = pw;
+      if (gradLayer.height !== ph) gradLayer.height = ph;
+      gradCtx.clearRect(0, 0, pw, ph);
+
+      const grad = smoothGradientLine(gradCtx, s, ax, ay, bx, by, phase);
+      gradCtx.fillStyle = grad;
+      gradCtx.fillRect(0, 0, pw, ph);
       gradCtx.globalCompositeOperation = 'destination-in';
-      gradCtx.drawImage(maskLayer, 0, 0, gradLayer.width, gradLayer.height);
+      gradCtx.drawImage(maskLayer, 0, 0);
       gradCtx.globalCompositeOperation = 'source-over';
 
-      trailCtx!.save();
-      trailCtx!.globalAlpha = alpha;
-      trailCtx!.drawImage(gradLayer, 0, 0, gradLayer.width, gradLayer.height, 0, 0, w, h);
-      trailCtx!.restore();
+      trailCtx.save();
+      trailCtx.setTransform(1, 0, 0, 1, 0, 0);
+      trailCtx.globalAlpha = alpha;
+      trailCtx.drawImage(gradLayer, 0, 0, pw, ph, 0, 0, pw, ph);
+      trailCtx.restore();
     }
+
+    trailCtx.restore();
   }
 
   function paintTrail(s: ModeSnapshot, phase: number, alpha: number, w: number, h: number, animating: boolean) {
@@ -318,13 +393,20 @@ export function createGradientFlowMode(
 
     trailKey = key;
     trailReady = true;
-    setupSurface(trailLayer, trailCtx, w, h);
-    trailCtx.clearRect(0, 0, w, h);
 
     if (mode === 'smooth') {
+      setupSurface(trailLayer, trailCtx, w, h);
+      trailCtx.clearRect(0, 0, w, h);
       paintTrailSmooth(s, phase, alpha, layers, tx, ty, w, h);
     } else {
-      paintTrailStriped(s, phase, alpha, layers, tx, ty);
+      setupSurface(trailLayer, trailCtx, w, h);
+      trailCtx.clearRect(0, 0, w, h);
+      trailCtx.save();
+      trailCtx.beginPath();
+      trailCtx.rect(0, 0, w, h);
+      trailCtx.clip();
+      paintTrailStriped(s, phase, alpha, layers, tx, ty, w, h);
+      trailCtx.restore();
     }
   }
 
