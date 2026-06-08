@@ -7,6 +7,7 @@ import { fillGlyphPath } from '../utils/opentypeCanvas';
 import {
   normalizeExpansion,
   RIPPLE_BIAS_SHIFT,
+  RIPPLE_FLOW_SPEED,
   rippleReach,
   rippleRingFillColor,
   rippleStepRadius,
@@ -16,6 +17,7 @@ import {
 import { layoutTextForCanvas } from '../utils/textLayout';
 import {
   buildTextSilhouette,
+  drawVectorRippleGrow,
   drawVectorRippleStatic,
   getVectorClipper,
   initVectorClipper,
@@ -29,6 +31,7 @@ type Lay = { char: string; x: number; bl: number };
 
 const MIN_COUNT = 2;
 const MAX_COUNT = 100;
+const PARTIAL_STEPS = 20;
 
 function settings(s: ModeSnapshot): ExpansionSettings {
   return normalizeExpansion({
@@ -46,6 +49,10 @@ function baseStepPx(w: number, h: number, count: number): number {
   return rippleReach(w, h, 0, 0) / Math.max(2, count);
 }
 
+function canvasDpr(w: number, canvas: HTMLCanvasElement): number {
+  return canvas.width / Math.max(1, w);
+}
+
 export function createExpansionMode(
   _canvas: HTMLCanvasElement,
   ctx: CanvasRenderingContext2D,
@@ -57,16 +64,23 @@ export function createExpansionMode(
 
   const shapes = new Map<number, Paths>();
   const path2DCache = new Map<number, Path2D>();
+  const partialCache = new Map<string, Path2D>();
   let topGen = 0;
   let chainSig = '';
 
   let clipperReady = false;
+  let flowPhase = 0;
   let tickerFn: (() => void) | null = null;
+  let tabVisible = true;
 
   const effectLayer = document.createElement('canvas');
   const effectCtx = effectLayer.getContext('2d');
   let layerKey = '';
   let layerReady = false;
+
+  function onVis() {
+    tabVisible = !document.hidden;
+  }
 
   function viewport() {
     const s = getSnap();
@@ -103,6 +117,8 @@ export function createExpansionMode(
       chainSig = '';
       layerKey = '';
       layerReady = false;
+      flowPhase = 0;
+      partialCache.clear();
       rebuildLayout();
     }
   }
@@ -119,10 +135,12 @@ export function createExpansionMode(
     w: number,
     h: number,
     count: number,
+    scale = 1,
   ): Paths {
     const clipper = getVectorClipper();
     if (!clipper) return [];
-    const delta = stepPx(exp, gen, w, h, count);
+    const delta = stepPx(exp, gen, w, h, count) * scale;
+    if (delta <= 0) return prev;
     return offsetPathsWithBias(
       clipper,
       prev,
@@ -144,6 +162,7 @@ export function createExpansionMode(
 
   function clearCaches() {
     path2DCache.clear();
+    partialCache.clear();
   }
 
   function buildTo(exp: ExpansionSettings, target: number, w: number, h: number, count: number) {
@@ -157,6 +176,7 @@ export function createExpansionMode(
       cacheGen(next);
       topGen = next;
       layerReady = false;
+      partialCache.clear();
     }
   }
 
@@ -206,13 +226,14 @@ export function createExpansionMode(
       exp.strokeColor,
       exp.strokeWidth,
       exp.customPalette.join(','),
-      'vector-v2',
+      'vector-v3',
     ].join('|');
 
     if (sig !== chainSig) {
       chainSig = sig;
       layerKey = '';
       layerReady = false;
+      flowPhase = 0;
       resetChain(s);
     }
 
@@ -245,25 +266,77 @@ export function createExpansionMode(
     return rippleRingFillColor(exp, outerGen);
   }
 
+  function partialOuterPath2D(
+    exp: ExpansionSettings,
+    gen: number,
+    frac: number,
+    w: number,
+    h: number,
+    count: number,
+  ): Path2D | null {
+    const q = Math.round(frac * PARTIAL_STEPS) / PARTIAL_STEPS;
+    if (q <= 0) return path2DCache.get(gen) ?? null;
+    if (q >= 1) return path2DCache.get(gen + 1) ?? null;
+
+    const key = `${chainSig}|${gen}|${q}`;
+    const cached = partialCache.get(key);
+    if (cached) return cached;
+
+    const inner = shapes.get(gen);
+    if (!inner?.length) return null;
+
+    const partial = offsetStep(exp, gen + 1, inner, w, h, count, q);
+    if (!partial.length) return path2DCache.get(gen) ?? null;
+
+    const p2d = pathsToPath2D(partial);
+    partialCache.set(key, p2d);
+    return p2d;
+  }
+
+  function setupEffectSurface(w: number, h: number) {
+    if (!effectCtx) return 1;
+    const dpr = canvasDpr(w, ctx.canvas);
+    const pw = Math.max(1, Math.round(w * dpr));
+    const ph = Math.max(1, Math.round(h * dpr));
+    if (effectLayer.width !== pw) effectLayer.width = pw;
+    if (effectLayer.height !== ph) effectLayer.height = ph;
+    effectCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    effectCtx.imageSmoothingEnabled = true;
+    effectCtx.imageSmoothingQuality = 'high';
+    return dpr;
+  }
+
+  function blitEffectLayer(w: number, h: number) {
+    const dpr = canvasDpr(w, ctx.canvas);
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(effectLayer, 0, 0, effectLayer.width, effectLayer.height, 0, 0, w * dpr, h * dpr);
+    ctx.restore();
+  }
+
   function paintEffectLayer(
     exp: ExpansionSettings,
     count: number,
+    phase: number,
     stageBg: string,
     lw: number,
     alpha: number,
     w: number,
     h: number,
+    animating: boolean,
   ) {
-    const key = `${count}|${topGen}|${lw}|${alpha}|${colorSig(exp, count)}`;
-    if (layerReady && key === layerKey && effectLayer.width === w && effectLayer.height === h) {
+    const phaseKey = animating ? phase.toFixed(4) : 'static';
+    const key = `${phaseKey}|${count}|${topGen}|${lw}|${alpha}|${colorSig(exp, count)}`;
+    if (!animating && layerReady && key === layerKey && effectLayer.width > 0) {
       return;
     }
     if (!effectCtx) return;
 
     layerKey = key;
     layerReady = true;
-    if (effectLayer.width !== w) effectLayer.width = w;
-    if (effectLayer.height !== h) effectLayer.height = h;
+    setupEffectSurface(w, h);
     effectCtx.clearRect(0, 0, w, h);
 
     const visibleRings = Math.min(count, topGen);
@@ -271,6 +344,23 @@ export function createExpansionMode(
 
     const useStrokes = rippleUsesStrokes(exp);
     const drawStyle = useStrokes ? 'ring' : 'solid';
+
+    if (animating) {
+      drawVectorRippleGrow(
+        effectCtx,
+        visibleRings,
+        phase,
+        (g) => path2DCache.get(g) ?? null,
+        (g, frac) => partialOuterPath2D(exp, g, frac, w, h, count),
+        drawStyle,
+        (g) => ringFillForGen(exp, g, stageBg),
+        useStrokes ? () => rippleStrokeColor(exp) : null,
+        lw,
+        alpha,
+      );
+      return;
+    }
+
     drawVectorRippleStatic(
       effectCtx,
       (g) => path2DCache.get(g) ?? null,
@@ -313,11 +403,30 @@ export function createExpansionMode(
       const count = contourCount(exp);
       const alpha = effectOpacity(s.visual);
       const lw = Math.max(0.35, exp.strokeWidth);
+      const animating =
+        !s.visual.sceneFrozen &&
+        s.visual.animationEnabled &&
+        tabVisible &&
+        topGen >= count;
+
+      if (animating) {
+        flowPhase += RIPPLE_FLOW_SPEED * (gsap.ticker.deltaRatio() / 60);
+      }
 
       if (topGen >= 1) {
-        paintEffectLayer(exp, count, s.visual.stageBackground, lw, alpha, w, h);
-        if (effectCtx && effectLayer.width > 0) {
-          ctx.drawImage(effectLayer, 0, 0);
+        paintEffectLayer(
+          exp,
+          count,
+          flowPhase,
+          s.visual.stageBackground,
+          lw,
+          alpha,
+          w,
+          h,
+          animating,
+        );
+        if (effectLayer.width > 0) {
+          blitEffectLayer(w, h);
         }
       }
 
@@ -331,6 +440,8 @@ export function createExpansionMode(
 
   return {
     start() {
+      document.addEventListener('visibilitychange', onVis);
+      tabVisible = !document.hidden;
       clipperReady = false;
       layoutSig = '';
       chainSig = '';
@@ -339,6 +450,7 @@ export function createExpansionMode(
       shapes.clear();
       clearCaches();
       topGen = 0;
+      flowPhase = 0;
       rebuildLayout();
 
       initVectorClipper()
@@ -352,6 +464,7 @@ export function createExpansionMode(
       gsap.ticker.add(tickerFn);
     },
     stop() {
+      document.removeEventListener('visibilitychange', onVis);
       if (tickerFn) gsap.ticker.remove(tickerFn);
       tickerFn = null;
     },
