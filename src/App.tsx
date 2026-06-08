@@ -8,7 +8,7 @@ import {
   type LabModeId,
   type PlaygroundVisualState,
 } from './types/playground';
-import { buildCanvasFont, layoutGlyphs, measureLineWidth } from './utils/textLayout';
+import { buildCanvasFont, layoutTextForCanvas } from './utils/textLayout';
 import { exportCanvasPng } from './utils/exportPng';
 import { downloadTextFile, exportStaticSvg } from './utils/exportSvg';
 import { LabeledSlider } from './components/ui/LabeledSlider';
@@ -25,7 +25,7 @@ const DEFAULT_WEIGHT =
 function modeHint(mode: LabModeId): string {
   switch (mode) {
     case 'expansion':
-      return 'Один контур слова → копия → копия… Слои как в референсе; копии и расстояние — в слайдерах';
+      return 'N копий offset от предыдущей формы; шаг ≈ экран / N; поток без тяжёлой сборки';
     case 'colorStack':
       return 'Залитые копии со смещением — имитация объёма';
     case 'bloom':
@@ -111,10 +111,16 @@ export default function App() {
     if (!ctx) return;
     const w = c.clientWidth;
     const h = c.clientHeight;
-    const tw = measureLineWidth(ctx, displayText, fontCss, visual.letterSpacing);
-    const ox = (w - tw) * 0.5;
-    const oy = h * 0.55;
-    const layouts = layoutGlyphs(ctx, displayText, fontCss, visual.fontSize, visual.letterSpacing, ox, oy);
+    const block = layoutTextForCanvas(
+      ctx,
+      displayText,
+      fontCss,
+      visual.fontSize,
+      visual.letterSpacing,
+      w,
+      h,
+    );
+    const layouts = block.glyphs;
     const fill =
       visual.colorMode === 'monochrome'
         ? visual.monochromeColor
@@ -122,7 +128,7 @@ export default function App() {
     const svg = await exportStaticSvg({
       fontUrl,
       layouts,
-      fontSize: visual.fontSize,
+      fontSize: block.effectiveFontSize,
       width: w,
       height: h,
       fill,
@@ -303,17 +309,17 @@ export default function App() {
                   setVisual((v) => ({
                     ...v,
                     stageBackground: '#000000',
-                    monochromeColor: '#ffffff',
-                    colorMode: 'monochrome',
                     expansion: {
                       ...v.expansion,
-                      strokeWidth: 1,
                       ringSpacing: 4,
                       waveFlatten: 0.55,
                       spacingMode: 'uniform',
                       spacingSpread: 0.08,
                       edgeMode: 'smoothNearText',
                       growSpeed: 0.55,
+                      rippleColorMode: 'dual',
+                      colorA: '#ffffff',
+                      colorB: '#ff2bd6',
                     },
                   }));
                 }
@@ -389,15 +395,6 @@ export default function App() {
               />
             )}
             <LabeledSlider
-              label="Толщина линии"
-              min={0.2}
-              max={4}
-              step={0.1}
-              freeInput
-              value={expansion.strokeWidth}
-              onChange={(v) => setVisual((s) => ({ ...s, expansion: { ...s.expansion, strokeWidth: v } }))}
-            />
-            <LabeledSlider
               label="Скорость потока"
               min={0}
               max={3}
@@ -443,30 +440,114 @@ export default function App() {
                 </RoundButton>
               </div>
             </div>
-            <div className="lab__field lab__field--row">
-              <label htmlFor="exp-stroke">Цвет контура</label>
-              <input
-                id="exp-stroke"
-                type="color"
-                value={expansion.strokeColor === 'auto' ? visual.monochromeColor : expansion.strokeColor}
-                onChange={(e) =>
-                  setVisual((s) => ({
-                    ...s,
-                    expansion: { ...s.expansion, strokeColor: e.target.value },
-                  }))
-                }
-              />
-              <RoundToggle
-                label="Режим цвета"
-                pressed={expansion.strokeColor === 'auto'}
-                onChange={(on) =>
-                  setVisual((s) => ({
-                    ...s,
-                    expansion: { ...s.expansion, strokeColor: on ? 'auto' : s.monochromeColor },
-                  }))
-                }
-              />
+            <div className="lab__field">
+              <span>Цвета колец</span>
+              <div className="lab__row">
+                <RoundButton
+                  active={expansion.rippleColorMode === 'dual'}
+                  onClick={() =>
+                    setVisual((s) => ({
+                      ...s,
+                      expansion: { ...s.expansion, rippleColorMode: 'dual' },
+                    }))
+                  }
+                >
+                  2 цвета
+                </RoundButton>
+                <RoundButton
+                  active={expansion.rippleColorMode === 'custom'}
+                  onClick={() =>
+                    setVisual((s) => ({
+                      ...s,
+                      expansion: { ...s.expansion, rippleColorMode: 'custom' },
+                    }))
+                  }
+                >
+                  Кастом
+                </RoundButton>
+              </div>
             </div>
+            {expansion.rippleColorMode === 'dual' ? (
+              <>
+                <div className="lab__field lab__field--row">
+                  <label htmlFor="exp-color-a">Цвет 1</label>
+                  <input
+                    id="exp-color-a"
+                    type="color"
+                    value={expansion.colorA}
+                    onChange={(e) =>
+                      setVisual((s) => ({
+                        ...s,
+                        expansion: { ...s.expansion, colorA: e.target.value },
+                      }))
+                    }
+                  />
+                </div>
+                <div className="lab__field lab__field--row">
+                  <label htmlFor="exp-color-b">Цвет 2</label>
+                  <input
+                    id="exp-color-b"
+                    type="color"
+                    value={expansion.colorB}
+                    onChange={(e) =>
+                      setVisual((s) => ({
+                        ...s,
+                        expansion: { ...s.expansion, colorB: e.target.value },
+                      }))
+                    }
+                  />
+                </div>
+              </>
+            ) : (
+              <>
+                {expansion.customColors.map((c, i) => (
+                  <div key={i} className="lab__field lab__field--row">
+                    <label htmlFor={`exp-custom-${i}`}>#{i + 1}</label>
+                    <input
+                      id={`exp-custom-${i}`}
+                      type="color"
+                      value={c}
+                      onChange={(e) =>
+                        setVisual((s) => {
+                          const next = [...s.expansion.customColors];
+                          next[i] = e.target.value;
+                          return { ...s, expansion: { ...s.expansion, customColors: next } };
+                        })
+                      }
+                    />
+                    <RoundButton
+                      active={false}
+                      disabled={expansion.customColors.length <= 2}
+                      onClick={() =>
+                        setVisual((s) => ({
+                          ...s,
+                          expansion: {
+                            ...s.expansion,
+                            customColors: s.expansion.customColors.filter((_, j) => j !== i),
+                          },
+                        }))
+                      }
+                    >
+                      ×
+                    </RoundButton>
+                  </div>
+                ))}
+                <RoundButton
+                  active={false}
+                  onClick={() =>
+                    setVisual((s) => ({
+                      ...s,
+                      expansion: {
+                        ...s.expansion,
+                        customColors: [...s.expansion.customColors, '#ffffff'],
+                      },
+                    }))
+                  }
+                >
+                  + цвет
+                </RoundButton>
+              </>
+            )}
           </>
         )}
 

@@ -2,7 +2,7 @@ import gsap from 'gsap';
 import { colorForGlyph } from '../utils/colors';
 import { applyMultiplyBlend, clearNeutral } from '../utils/canvas';
 import { effectOpacity } from '../utils/visualAlpha';
-import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
+import { layoutTextForCanvas } from '../utils/textLayout';
 import type { ModeController, ModeSnapshot } from './types';
 import type { AssemblySettings } from '../types/playground';
 
@@ -51,16 +51,16 @@ export function createAssemblyMode(
   let lastTickTime = performance.now();
   let frame = 0;
 
+  let layoutFontSize = 72;
+
   function rebuild() {
     const s = getSnap();
     const asm = s.visual.assembly;
     const spacingBoost = asm.overlap ? 0 : s.fontSize * 0.06;
     const letter = s.letterSpacing + spacingBoost;
-    const tw = measureLineWidth(ctx, s.text, s.fontCss, letter);
-    const ox = (s.w - tw) * 0.5;
-    const oy = s.h * 0.55;
-    const lays = layoutGlyphs(ctx, s.text, s.fontCss, s.fontSize, letter, ox, oy);
-    systems = lays.map((g, i) => ({
+    const block = layoutTextForCanvas(ctx, s.text, s.fontCss, s.fontSize, letter, s.w, s.h);
+    layoutFontSize = block.effectiveFontSize;
+    systems = block.glyphs.map((g, i) => ({
       char: g.char,
       tx: g.x,
       ty: g.baseline,
@@ -80,7 +80,7 @@ export function createAssemblyMode(
   }
 
   function addParticle(sys: LetterSystem, asm: AssemblySettings, s: ModeSnapshot) {
-    const fs = s.fontSize;
+    const fs = layoutFontSize;
     const maxR = fs * (0.55 + asm.orbitRadius * 2.4);
     const minR = Math.max(fs * 0.08, maxR * 0.12);
     const start = randomInRing(sys.tx, sys.ty, maxR, minR);
@@ -124,7 +124,7 @@ export function createAssemblyMode(
 
     const frozen = s.visual.sceneFrozen;
     const asm = s.visual.assembly;
-    const fs = s.fontSize;
+    const fs = layoutFontSize;
     const grid = Math.max(1, asm.pixelJump);
     const t = performance.now();
     const dt = Math.min(0.034, Math.max(0.008, (t - lastTickTime) / 1000));

@@ -2,7 +2,7 @@ import gsap from 'gsap';
 import { colorForGlyph, smoothstep } from '../utils/colors';
 import { applyMultiplyBlend, clearNeutral } from '../utils/canvas';
 import { effectOpacity } from '../utils/visualAlpha';
-import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
+import { layoutTextForCanvas } from '../utils/textLayout';
 import type { ModeController, ModeSnapshot } from './types';
 import type { BloomSettings } from '../types/playground';
 
@@ -51,13 +51,23 @@ export function createBloomPaintMode(
   let mouseY = -1e4;
   let tickerFn: (() => void) | null = null;
 
+  let layoutFontSize = 72;
+  let layoutFontCss = '';
+
   function resetLayout() {
     const s = getSnap();
-    const tw = measureLineWidth(ctx, s.text, s.fontCss, s.letterSpacing);
-    const ox = (s.w - tw) * 0.5;
-    const oy = s.h * 0.55;
-    const lays = layoutGlyphs(ctx, s.text, s.fontCss, s.fontSize, s.letterSpacing, ox, oy);
-    glyphs = lays.map((g, i) => ({
+    const block = layoutTextForCanvas(
+      ctx,
+      s.text,
+      s.fontCss,
+      s.fontSize,
+      s.letterSpacing,
+      s.w,
+      s.h,
+    );
+    layoutFontSize = block.effectiveFontSize;
+    layoutFontCss = block.effectiveFontCss;
+    glyphs = block.glyphs.map((g, i) => ({
       char: g.char,
       x: g.x,
       y: g.y,
@@ -118,7 +128,7 @@ export function createBloomPaintMode(
     const perpY = nx;
 
     const variance = b.trailSizeVariance;
-    const base = s.fontSize * (0.055 + b.trailAmount * 0.04);
+    const base = layoutFontSize * (0.055 + b.trailAmount * 0.04);
     const w =
       base *
       (0.75 + Math.random() * 0.35 * variance) *
@@ -159,7 +169,7 @@ export function createBloomPaintMode(
     if (frozen) return;
     const s = getSnap();
     const b = s.visual.bloom;
-    const fs = s.fontSize;
+    const fs = layoutFontSize;
     const radius = fs * (0.55 + b.interactionRadius * 1.15);
     const maxPush = fs * (0.08 + b.displacementStrength * 0.38);
     const springK = 1.8 + b.returnSpeed * 12;
@@ -248,7 +258,7 @@ export function createBloomPaintMode(
     const s = getSnap();
     const master = effectOpacity(s.visual);
     ctx.save();
-    ctx.font = s.fontCss;
+    ctx.font = layoutFontCss || s.fontCss;
     ctx.textBaseline = 'alphabetic';
     for (const g of glyphs) {
       ctx.globalAlpha = master;

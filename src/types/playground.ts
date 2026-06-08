@@ -35,16 +35,17 @@ export type RippleSpacingMode = 'uniform' | 'accelerate';
 /** Резкость контура: везде одинаково или плавнее у текста. */
 export type RippleEdgeMode = 'uniform' | 'smoothNearText';
 
+/** Два чередующихся цвета или пользовательская палитра. */
+export type RippleColorMode = 'dual' | 'custom';
+
 /** Ripple: цепочка Offset Path (Shapeₙ = Smooth(Offset(Shapeₙ₋₁))). */
 export interface ExpansionSettings {
   /** базовый шаг между поколениями (px) */
   ringSpacing: number;
   /** сколько колец видно одновременно (окно потока) */
   contourCount: number;
-  strokeWidth: number;
   /** скорость бесконечного потока */
   growSpeed: number;
-  strokeColor: string;
   /** множитель шага offset */
   offsetScale: number;
   /** 0 = зигзаг, 1 = плавные линии */
@@ -53,6 +54,11 @@ export interface ExpansionSettings {
   /** для accelerate: насколько растёт шаг с каждой копией (0…1) */
   spacingSpread: number;
   edgeMode: RippleEdgeMode;
+  rippleColorMode: RippleColorMode;
+  colorA: string;
+  colorB: string;
+  /** порядок чередования в режиме custom */
+  customColors: string[];
 }
 
 /** Залитые смещённые копии (объём). */
@@ -161,14 +167,16 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
   expansion: {
     ringSpacing: 4,
     contourCount: 40,
-    strokeWidth: 1,
     growSpeed: 0.55,
-    strokeColor: 'auto',
     offsetScale: 1,
     waveFlatten: 0.55,
     spacingMode: 'uniform',
     spacingSpread: 0.08,
     edgeMode: 'smoothNearText',
+    rippleColorMode: 'dual',
+    colorA: '#ffffff',
+    colorB: '#ff2bd6',
+    customColors: ['#ffffff', '#ff2bd6', '#00e5ff'],
   },
   colorStack: {
     duplicateCount: 28,

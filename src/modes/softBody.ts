@@ -2,7 +2,7 @@ import gsap from 'gsap';
 import { colorForGlyph, lerp, smoothstep } from '../utils/colors';
 import { applyMultiplyBlend, clearNeutral } from '../utils/canvas';
 import { effectOpacity } from '../utils/visualAlpha';
-import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
+import { layoutTextForCanvas } from '../utils/textLayout';
 import type { ModeController, ModeSnapshot } from './types';
 import type { SoftBodySettings } from '../types/playground';
 
@@ -88,20 +88,22 @@ export function createSoftBodyMode(
     return Math.sqrt(fx * fy);
   }
 
+  let layoutFontSize = 72;
+
   function rebuild() {
     const s = getSnap();
     const cfg = s.visual.softBody;
     const spacingBoost = cfg.overlap ? 0 : s.fontSize * 0.06;
     const letter = s.letterSpacing + spacingBoost;
-    const tw = measureLineWidth(ctx, s.text, s.fontCss, letter);
-    const baseOx = (s.w - tw) * 0.5;
-    const oy = s.h * 0.55;
-    const lays = layoutGlyphs(ctx, s.text, s.fontCss, s.fontSize, letter, baseOx, oy);
+    const block = layoutTextForCanvas(ctx, s.text, s.fontCss, s.fontSize, letter, s.w, s.h);
+    const lays = block.glyphs;
+    layoutFontSize = block.effectiveFontSize;
     if (lays.length === 0) {
       glyphs = [];
       return;
     }
 
+    const tw = lays.reduce((sum, g) => sum + g.w + letter, 0);
     const avgW = Math.max(6, tw / lays.length);
     const margin = 90;
     const span = s.w + margin * 2;
@@ -141,8 +143,9 @@ export function createSoftBodyMode(
       return;
     }
 
+    const oy = block.container.y + block.container.h * 0.5;
     let cursorX = -margin + Math.random() * avgW;
-    const rowH = s.fontSize * 1.15;
+    const rowH = layoutFontSize * 1.15;
 
     for (let i = 0; i < count; i++) {
       const src = lays[i % lays.length]!;
@@ -219,8 +222,8 @@ export function createSoftBodyMode(
 
         wrapGlyph(g, s.w, s.h, margin);
 
-        let jx = Math.sin(t * 0.0009 + g.phaseB) * s.fontSize * 0.018 * micro;
-        let jy = Math.cos(t * 0.00075 + g.phaseA) * s.fontSize * 0.014 * micro;
+        let jx = Math.sin(t * 0.0009 + g.phaseB) * layoutFontSize * 0.018 * micro;
+        let jy = Math.cos(t * 0.00075 + g.phaseA) * layoutFontSize * 0.014 * micro;
         if (grid > 1) {
           jx = Math.round(jx / grid) * grid;
           jy = Math.round(jy / grid) * grid;

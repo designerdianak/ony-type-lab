@@ -350,9 +350,106 @@ export function expandMaskGeneration(
   return expandMaskStep(prev, cw, ch, p.radiusCells, p.smoothPasses, p.threshold);
 }
 
+/** Offset+Smooth в готовый буфер (без лишних аллокаций). */
+export function expandMaskGenerationInto(
+  prev: Uint8Array,
+  out: Uint8Array,
+  generation: number,
+  cw: number,
+  ch: number,
+  baseRadius: number,
+  waveFlatten: number,
+  spacingMode: 'uniform' | 'accelerate',
+  spacingSpread: number,
+  edgeMode: 'uniform' | 'smoothNearText',
+  farGen: number,
+  work?: Uint8Array,
+): Uint8Array {
+  const p = rippleStepParams(
+    generation,
+    baseRadius,
+    farGen,
+    waveFlatten,
+    spacingMode,
+    spacingSpread,
+    edgeMode,
+  );
+  dilateMaskInto(prev, out, cw, ch, p.radiusCells);
+  if (p.smoothPasses <= 0) return out;
+  const smoothed = smoothBinaryMask(out, cw, ch, p.smoothPasses, p.threshold);
+  if (work && work.length === out.length) {
+    work.set(smoothed);
+    out.set(work);
+    return out;
+  }
+  out.set(smoothed);
+  return out;
+}
+
 /**
- * Cavalry: Shape1…ShapeN — каждое поколение отдельно (заливка фоном + обводка).
- * Без boolean union; внешние слои перекрывают внутренние линии.
+ * Cavalry: Shape1…ShapeN — каждое поколение залито цветом (внутренние → внешние).
+ */
+export function drawFilledGenerationStack(
+  ctx: CanvasRenderingContext2D,
+  masks: Uint8Array[],
+  firstGen: number,
+  lastGen: number,
+  cw: number,
+  ch: number,
+  cell: number,
+  originX: number,
+  originY: number,
+  colorForGen: (gen: number) => string,
+  alpha: number,
+  scratch: HTMLCanvasElement,
+) {
+  drawFilledGenerationRange(
+    ctx,
+    (g) => masks[g] ?? null,
+    firstGen,
+    lastGen,
+    cw,
+    ch,
+    cell,
+    originX,
+    originY,
+    colorForGen,
+    alpha,
+    scratch,
+  );
+}
+
+/** Заливка диапазона поколений — маска берётся из lookup (rolling cache). */
+export function drawFilledGenerationRange(
+  ctx: CanvasRenderingContext2D,
+  maskAt: (gen: number) => Uint8Array | null,
+  firstGen: number,
+  lastGen: number,
+  cw: number,
+  ch: number,
+  cell: number,
+  originX: number,
+  originY: number,
+  colorForGen: (gen: number) => string,
+  alpha: number,
+  scratch: HTMLCanvasElement,
+) {
+  const lo = Math.max(1, firstGen);
+  const hi = lastGen;
+  if (lo > hi) return;
+
+  ctx.save();
+  ctx.translate(originX, originY);
+  for (let g = lo; g <= hi; g++) {
+    const mask = maskAt(g);
+    if (!mask) continue;
+    paintMaskFull(ctx, mask, cw, ch, cell, colorForGen(g), alpha, scratch);
+  }
+  ctx.restore();
+}
+
+/**
+ * Cavalry: Shape1…ShapeN — кольца залиты фоном, все обводки поверх (36Days).
  */
 export function drawContourGenerationStack(
   ctx: CanvasRenderingContext2D,
@@ -377,11 +474,20 @@ export function drawContourGenerationStack(
 
   ctx.save();
   ctx.translate(originX, originY);
+
+  for (let g = lo; g <= hi; g++) {
+    const mask = masks[g];
+    const prev = masks[g - 1];
+    if (!mask || !prev) continue;
+    paintRippleRing(ctx, mask, prev, cw, ch, cell, 0, 0, fill, alpha, scratch);
+  }
+
   for (let g = lo; g <= hi; g++) {
     const mask = masks[g];
     if (!mask) continue;
-    drawMaskContourLayer(ctx, mask, cw, ch, cell, fill, stroke, lineWidth, alpha, segBuf, scratch);
+    strokeContourLoops(ctx, extractMaskLoops(mask, cw, ch, cell, segBuf), stroke, lineWidth, alpha);
   }
+
   ctx.restore();
 }
 

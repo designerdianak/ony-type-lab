@@ -1,7 +1,7 @@
 import gsap from 'gsap';
 import { colorForGlyph, gradientAt, mulberry32, randomVividPalette } from '../utils/colors';
 import { applyMultiplyBlend, clearNeutral } from '../utils/canvas';
-import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
+import { layoutTextForCanvas } from '../utils/textLayout';
 import { effectOpacity } from '../utils/visualAlpha';
 import type { ModeController, ModeSnapshot } from './types';
 
@@ -32,18 +32,26 @@ export function createGradientFlowMode(
 
     const e = s.visual.elastic;
     const alpha = effectOpacity(s.visual);
-    const tw = measureLineWidth(ctx, s.text, s.fontCss, s.letterSpacing);
-    const ox = (s.w - tw) * 0.5;
-    const oy = s.h * 0.55;
-    const lays = layoutGlyphs(ctx, s.text, s.fontCss, s.fontSize, s.letterSpacing, ox, oy);
+    const block = layoutTextForCanvas(
+      ctx,
+      s.text,
+      s.fontCss,
+      s.fontSize,
+      s.letterSpacing,
+      s.w,
+      s.h,
+    );
+    const lays = block.glyphs;
+    const fs = block.effectiveFontSize;
+    const fontCss = block.effectiveFontCss;
     const steps = Math.max(4, Math.round(e.flowLength));
     const rad = (e.directionDeg * Math.PI) / 180;
-    const dx = Math.cos(rad) * e.stepSize * s.fontSize * 0.06;
-    const dy = Math.sin(rad) * e.stepSize * s.fontSize * 0.06;
+    const dx = Math.cos(rad) * e.stepSize * fs * 0.06;
+    const dy = Math.sin(rad) * e.stepSize * fs * 0.06;
     const pal = palette(s);
 
     ctx.save();
-    ctx.font = s.fontCss;
+    ctx.font = fontCss;
     ctx.textBaseline = 'alphabetic';
     ctx.textAlign = 'left';
 

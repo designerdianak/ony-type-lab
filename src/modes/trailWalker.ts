@@ -1,7 +1,7 @@
 import gsap from 'gsap';
 import { colorForGlyph } from '../utils/colors';
 import { applyMultiplyBlend, clearNeutral } from '../utils/canvas';
-import { measureLineWidth } from '../utils/textLayout';
+import { layoutTextForCanvas, measureLineWidth } from '../utils/textLayout';
 import { effectOpacity } from '../utils/visualAlpha';
 import type { ModeController, ModeSnapshot } from './types';
 
@@ -22,8 +22,17 @@ export function createTrailWalkerMode(
   let lastTick = performance.now();
 
   function reset(s: ModeSnapshot) {
-    x = s.w * 0.5;
-    y = s.h * 0.55;
+    const block = layoutTextForCanvas(
+      ctx,
+      s.text,
+      s.fontCss,
+      s.fontSize,
+      s.letterSpacing,
+      s.w,
+      s.h,
+    );
+    x = block.container.x + block.container.w * 0.5;
+    y = block.container.y + block.container.h * 0.5;
     angle = Math.random() * Math.PI * 2;
     turnT = 0;
     trail = [{ x, y, rot: angle }];

@@ -2,7 +2,7 @@ import gsap from 'gsap';
 import { colorForGlyph } from '../utils/colors';
 import { applyMultiplyBlend, clearNeutral } from '../utils/canvas';
 import { effectOpacity } from '../utils/visualAlpha';
-import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
+import { layoutTextForCanvas } from '../utils/textLayout';
 import type { ModeController, ModeSnapshot } from './types';
 
 const SYMBOL_POOL =
@@ -43,12 +43,17 @@ export function createSymbolOverlayMode(
 
   function rebuild() {
     const s = getSnap();
-    const tw = measureLineWidth(ctx, s.text, s.fontCss, s.letterSpacing);
-    const ox = (s.w - tw) * 0.5;
-    const oy = s.h * 0.55;
-    const lays = layoutGlyphs(ctx, s.text, s.fontCss, s.fontSize, s.letterSpacing, ox, oy);
+    const block = layoutTextForCanvas(
+      ctx,
+      s.text,
+      s.fontCss,
+      s.fontSize,
+      s.letterSpacing,
+      s.w,
+      s.h,
+    );
     const allOn = s.visual.symbol.interaction === 'alwaysOn';
-    glyphs = lays.map((g) => ({
+    glyphs = block.glyphs.map((g) => ({
       char: g.char,
       x: g.x,
       bl: g.baseline,

@@ -1,65 +1,86 @@
 import gsap from 'gsap';
 import type opentype from 'opentype.js';
-import { DEFAULT_PLAYGROUND_VISUAL } from '../types/playground';
-import { colorForGlyph } from '../utils/colors';
+import { DEFAULT_PLAYGROUND_VISUAL, type ExpansionSettings } from '../types/playground';
 import { clearNeutral } from '../utils/canvas';
 import { rasterizeGlyphMask, type GlyphSlot } from '../utils/contourField';
 import {
-  drawContourGenerationStack,
-  drawMaskContourLayer,
-  expandMaskGeneration,
+  drawFilledGenerationRange,
+  expandMaskGenerationInto,
   maskHasInk,
 } from '../utils/iterativeContours';
-import { fillGlyphPath, strokeGlyphPath } from '../utils/opentypeCanvas';
-import { layoutGlyphs, measureLineWidth } from '../utils/textLayout';
+import { fillGlyphPath } from '../utils/opentypeCanvas';
+import { layoutTextForCanvas } from '../utils/textLayout';
 import { effectOpacity } from '../utils/visualAlpha';
 import type { ModeController, ModeSnapshot } from './types';
 
 type Lay = { char: string; x: number; bl: number };
 
-const FLOW_RATE = 11;
-const MAX_ADVANCE_PER_FRAME = 4;
-const STATIC_BUILD_BATCH = 12;
-const STATIC_BUILD_BUDGET_MS = 24;
+const FLOW_RATE = 9;
+const MAX_COPIES = 120;
+const MIN_COPIES = 4;
+const GC_MARGIN = 2;
 
 function safeExpansion(s: ModeSnapshot) {
   return { ...DEFAULT_PLAYGROUND_VISUAL.expansion, ...s.visual.expansion };
 }
 
-function windowSize(exp: ReturnType<typeof safeExpansion>): number {
+/** N копий в потоке — только они строятся и рисуются. */
+function copyCount(exp: ReturnType<typeof safeExpansion>): number {
   const n = Math.round(exp.contourCount);
-  return Math.min(150, Math.max(4, Number.isFinite(n) ? n : 40));
+  return Math.min(MAX_COPIES, Math.max(MIN_COPIES, Number.isFinite(n) ? n : 40));
 }
 
-function staticTotal(exp: ReturnType<typeof safeExpansion>, w: number, h: number): number {
-  const spacing = Math.max(2, exp.ringSpacing ?? 4);
-  const toEdge = Math.ceil(Math.max(w, h) / spacing) + 24;
-  return Math.min(200, Math.max(windowSize(exp), toEdge));
+/** Дальность потока ≈ край экрана; шаг = reach / N × множитель «Расстояние». */
+function screenReach(w: number, h: number): number {
+  return Math.max(w, h) * 0.52;
 }
 
-function stepParams(exp: ReturnType<typeof safeExpansion>, cell: number) {
-  const spacing = Math.max(2, exp.ringSpacing ?? 4);
-  const radiusCells = Math.max(1, spacing / cell) * (0.65 + (exp.offsetScale ?? 1) * 0.45);
-  return { radiusCells };
+function baseStepPx(exp: ReturnType<typeof safeExpansion>, w: number, h: number, n: number): number {
+  const reach = screenReach(w, h);
+  const spacingMul = Math.max(0.5, exp.ringSpacing ?? 4) / 4;
+  return (reach / Math.max(MIN_COPIES, n)) * spacingMul * (0.65 + (exp.offsetScale ?? 1) * 0.45);
 }
 
-function gridCell(exp: ReturnType<typeof safeExpansion>, w: number, h: number) {
-  const spacing = Math.max(2, exp.ringSpacing ?? 4);
-  const cell = Math.max(1.25, Math.min(2.5, spacing * 0.38));
+function baseRadiusCells(
+  exp: ReturnType<typeof safeExpansion>,
+  cell: number,
+  w: number,
+  h: number,
+  n: number,
+): number {
+  return Math.max(1, baseStepPx(exp, w, h, n) / cell);
+}
+
+function gridCell(exp: ReturnType<typeof safeExpansion>, w: number, h: number, n: number) {
+  const step = baseStepPx(exp, w, h, n);
+  const cell = Math.max(1.5, Math.min(3, step * 0.32));
   const cw = Math.ceil(w / cell);
   const ch = Math.ceil(h / cell);
-  const maxCells = 720_000;
+  const maxCells = 480_000;
   if (cw * ch > maxCells) return Math.sqrt((w * h) / maxCells);
   return cell;
 }
 
-function rasterPadding(total: number, spacing: number, w: number, h: number): number {
-  const reach = (total - 1) * spacing * 1.4;
-  return Math.ceil(Math.max(reach * 0.55, Math.max(w, h) * 0.4) + spacing * 8);
+function rasterPadding(exp: ReturnType<typeof safeExpansion>, w: number, h: number, n: number): number {
+  const reach = baseStepPx(exp, w, h, n) * n * 1.15;
+  return Math.ceil(reach + Math.max(w, h) * 0.12);
 }
 
 function stageFill(stageBackground: string): string | null {
   return stageBackground === 'transparent' ? null : stageBackground;
+}
+
+function ripplePalette(exp: ExpansionSettings): string[] {
+  if (exp.rippleColorMode === 'custom') {
+    const cols = exp.customColors.filter((c) => c && c.length > 0);
+    if (cols.length > 0) return cols;
+  }
+  return [exp.colorA, exp.colorB];
+}
+
+function colorForGeneration(exp: ExpansionSettings, gen: number): string {
+  const pal = ripplePalette(exp);
+  return pal[(gen - 1) % pal.length]!;
 }
 
 export function createExpansionMode(
@@ -67,50 +88,48 @@ export function createExpansionMode(
   ctx: CanvasRenderingContext2D,
   getSnap: () => ModeSnapshot,
 ): ModeController {
+  let layoutFontSize = 72;
+  let layoutFontCss = '';
   let lays: Lay[] = [];
   let layoutSig = '';
-  let rasterSig = '';
-  let tickerFn: (() => void) | null = null;
 
-  let glyphMask: Uint8Array | null = null;
-  let advanceMask: Uint8Array | null = null;
-  let advanceRing = 0;
-
-  let staticMasks: Uint8Array[] = [];
-  let staticBuildStep = 0;
-  let staticTarget = 32;
-  let staticReady = false;
-  let buildGen = 0;
+  /** Shape0…ShapeK — только нужные поколения (rolling cache). */
+  const maskByGen = new Map<number, Uint8Array>();
+  let highestGen = 0;
+  let chainSig = '';
 
   let gridCw = 0;
   let gridCh = 0;
   let gridCellPx = 2;
   let gridPad = 0;
   let buildRadius = 1;
+  let copiesN = 40;
+
+  let expandBufA: Uint8Array | null = null;
+  let expandBufB: Uint8Array | null = null;
 
   let flowPhase = 0;
-  let flowSig = '';
+  let flowHead = 0;
+  let tickerFn: (() => void) | null = null;
 
   const fillScratch = document.createElement('canvas');
-  const segBuf: { x0: number; y0: number; x1: number; y1: number }[] = [];
 
   function viewport() {
     const s = getSnap();
     return { w: Math.max(1, Math.round(s.w)), h: Math.max(1, Math.round(s.h)) };
   }
 
-  function rippleOpts(s: ModeSnapshot, farGen: number) {
+  function rippleOpts(s: ModeSnapshot) {
     const exp = safeExpansion(s);
     return {
       waveFlatten: exp.waveFlatten ?? 0.5,
       spacingMode: exp.spacingMode ?? 'uniform',
       spacingSpread: exp.spacingSpread ?? 0.08,
       edgeMode: exp.edgeMode ?? 'smoothNearText',
-      farGen,
     };
   }
 
-  function rebuild() {
+  function rebuildLayout() {
     const s = getSnap();
     const { w, h } = viewport();
     const text = s.text.trim();
@@ -118,240 +137,151 @@ export function createExpansionMode(
       lays = [];
       return;
     }
-    const tw = measureLineWidth(ctx, text, s.fontCss, s.letterSpacing);
-    const ox = (w - tw) * 0.5;
-    const oy = h * 0.55;
-    const g = layoutGlyphs(ctx, text, s.fontCss, s.fontSize, s.letterSpacing, ox, oy);
-    lays = g.map((lg) => ({ char: lg.char, x: lg.x, bl: lg.baseline }));
-  }
-
-  function resetRasterState() {
-    glyphMask = null;
-    advanceMask = null;
-    advanceRing = 0;
-    staticMasks = [];
-    staticBuildStep = 0;
-    staticReady = false;
-    flowPhase = 0;
-    flowSig = '';
-    buildGen++;
-  }
-
-  function ensureRaster(s: ModeSnapshot) {
-    const { w, h } = viewport();
-    if (w < 32 || h < 32 || lays.length === 0) {
-      resetRasterState();
-      return;
-    }
-
-    const exp = safeExpansion(s);
-    const anim = s.animationEnabled && !s.visual.sceneFrozen;
-    const total = anim ? windowSize(exp) + 48 : staticTotal(exp, w, h);
-    const cell = gridCell(exp, w, h);
-    const spacing = Math.max(2, exp.ringSpacing ?? 4);
-    const pad = rasterPadding(total, spacing, w, h);
-    const { radiusCells } = stepParams(exp, cell);
-
-    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${w}|${h}|${cell}|${total}|${pad}|${anim}|${exp.ringSpacing}|${exp.offsetScale}|${exp.waveFlatten}|${exp.spacingMode}|${exp.spacingSpread}|${exp.edgeMode}`;
-    if (sig === rasterSig && glyphMask) return;
-
-    rasterSig = sig;
-    resetRasterState();
-    buildRadius = radiusCells;
-    gridCellPx = cell;
-    gridPad = pad;
-    staticTarget = staticTotal(exp, w, h);
-
-    try {
-      const rw = w + pad * 2;
-      const rh = h + pad * 2;
-      const slots: GlyphSlot[] = lays.map((g) => ({
-        char: g.char,
-        x: g.x + pad,
-        bl: g.bl + pad,
-      }));
-      const raster = rasterizeGlyphMask(rw, rh, cell, slots, s.fontCss, s.fontSize, s.opentypeFont);
-      if (!maskHasInk(raster.mask)) return;
-
-      gridCw = raster.cw;
-      gridCh = raster.ch;
-      glyphMask = raster.mask;
-      advanceMask = new Uint8Array(glyphMask);
-      advanceRing = 0;
-
-      if (!anim) {
-        staticMasks = [new Uint8Array(glyphMask)];
-        staticBuildStep = 1;
-        const gen = buildGen;
-        const runStatic = () => {
-          if (gen !== buildGen || !glyphMask) return;
-          const t0 = performance.now();
-          const opts = rippleOpts(s, staticTarget);
-          while (
-            staticBuildStep < staticTarget &&
-            performance.now() - t0 < STATIC_BUILD_BUDGET_MS
-          ) {
-            let n = 0;
-            while (
-              staticBuildStep < staticTarget &&
-              n < STATIC_BUILD_BATCH &&
-              performance.now() - t0 < STATIC_BUILD_BUDGET_MS
-            ) {
-              const prev = staticMasks[staticMasks.length - 1]!;
-              staticMasks.push(
-                expandMaskGeneration(
-                  prev,
-                  staticBuildStep,
-                  gridCw,
-                  gridCh,
-                  buildRadius,
-                  opts.waveFlatten,
-                  opts.spacingMode,
-                  opts.spacingSpread,
-                  opts.edgeMode,
-                  staticTarget,
-                ),
-              );
-              staticBuildStep++;
-              n++;
-            }
-          }
-          if (gen !== buildGen) return;
-          if (staticBuildStep >= staticTarget) {
-            staticReady = true;
-            return;
-          }
-          requestAnimationFrame(runStatic);
-        };
-        requestAnimationFrame(runStatic);
-      }
-    } catch (err) {
-      console.error('[Ripple] raster failed', err);
-      resetRasterState();
-    }
+    const block = layoutTextForCanvas(
+      ctx,
+      text,
+      s.fontCss,
+      s.fontSize,
+      s.letterSpacing,
+      w,
+      h,
+    );
+    layoutFontSize = block.effectiveFontSize;
+    layoutFontCss = block.effectiveFontCss;
+    lays = block.glyphs.map((g) => ({ char: g.char, x: g.x, bl: g.baseline }));
   }
 
   function ensureLayout() {
     const s = getSnap();
     const { w, h } = viewport();
-    const lay = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${w}|${h}`;
-    if (lay !== layoutSig) {
-      layoutSig = lay;
-      rasterSig = '';
-      rebuild();
+    const sig = `${s.text}|${s.fontCss}|${s.fontSize}|${s.letterSpacing}|${w}|${h}`;
+    if (sig !== layoutSig) {
+      layoutSig = sig;
+      chainSig = '';
+      flowPhase = 0;
+      flowHead = 0;
+      rebuildLayout();
     }
   }
 
-  function advanceToward(targetRing: number, s: ModeSnapshot, farGen: number) {
-    if (!glyphMask || !advanceMask) return;
-    const opts = rippleOpts(s, farGen);
-    let steps = 0;
-    while (advanceRing < targetRing && steps < MAX_ADVANCE_PER_FRAME) {
-      advanceMask = expandMaskGeneration(
-        advanceMask,
-        advanceRing + 1,
-        gridCw,
-        gridCh,
-        buildRadius,
-        opts.waveFlatten,
-        opts.spacingMode,
-        opts.spacingSpread,
-        opts.edgeMode,
-        farGen,
-      );
-      advanceRing++;
-      steps++;
+  function gcBelow(minGen: number) {
+    for (const g of maskByGen.keys()) {
+      if (g > 0 && g < minGen) maskByGen.delete(g);
     }
   }
 
-  function strokeColor(s: ModeSnapshot) {
+  function expandOne(s: ModeSnapshot, gen: number, prev: Uint8Array): Uint8Array {
+    if (!expandBufA || expandBufA.length !== prev.length) {
+      expandBufA = new Uint8Array(prev.length);
+      expandBufB = new Uint8Array(prev.length);
+    }
+    expandMaskGenerationInto(
+      prev,
+      expandBufA,
+      gen,
+      gridCw,
+      gridCh,
+      buildRadius,
+      rippleOpts(s).waveFlatten,
+      rippleOpts(s).spacingMode,
+      rippleOpts(s).spacingSpread,
+      rippleOpts(s).edgeMode,
+      copiesN,
+      expandBufB ?? undefined,
+    );
+    return new Uint8Array(expandBufA);
+  }
+
+  /** Shapeₙ = Offset(Smooth(Shapeₙ₋₁)) — последовательно до targetGen. */
+  function ensureGeneration(s: ModeSnapshot, targetGen: number) {
+    if (targetGen <= highestGen) return;
+
+    while (highestGen < targetGen) {
+      const next = highestGen + 1;
+      const prev = maskByGen.get(highestGen);
+      if (!prev) break;
+      maskByGen.set(next, expandOne(s, next, prev));
+      highestGen = next;
+    }
+  }
+
+  function rebuildChain(s: ModeSnapshot) {
+    const { w, h } = viewport();
+    maskByGen.clear();
+    highestGen = 0;
+    expandBufA = null;
+    expandBufB = null;
+
+    if (w < 32 || h < 32 || lays.length === 0) return;
+
     const exp = safeExpansion(s);
-    if (exp.strokeColor !== 'auto' && exp.strokeColor) return exp.strokeColor;
-    return colorForGlyph({
-      mode: s.visual.colorMode,
-      monochrome: s.visual.monochromeColor,
-      seed: s.visual.rainbowSeed,
-      index: 0,
-      total: lays.length + 2,
-    });
+    copiesN = copyCount(exp);
+    const cell = gridCell(exp, w, h, copiesN);
+    const pad = rasterPadding(exp, w, h, copiesN);
+    buildRadius = baseRadiusCells(exp, cell, w, h, copiesN);
+    gridCellPx = cell;
+    gridPad = pad;
+
+    const rw = w + pad * 2;
+    const rh = h + pad * 2;
+    const slots: GlyphSlot[] = lays.map((g) => ({
+      char: g.char,
+      x: g.x + pad,
+      bl: g.bl + pad,
+    }));
+    const raster = rasterizeGlyphMask(
+      rw,
+      rh,
+      cell,
+      slots,
+      layoutFontCss || s.fontCss,
+      layoutFontSize,
+      s.opentypeFont,
+    );
+    if (!maskHasInk(raster.mask)) return;
+
+    gridCw = raster.cw;
+    gridCh = raster.ch;
+    maskByGen.set(0, new Uint8Array(raster.mask));
+
+    ensureGeneration(s, copiesN);
   }
 
-  function drawShape0Text(
-    s: ModeSnapshot,
-    col: string,
-    lw: number,
-    alpha: number,
-    font: opentype.Font,
-    fill: string | null,
-  ) {
-    const fs = s.fontSize;
+  function ensureChain(s: ModeSnapshot) {
+    const { w, h } = viewport();
+    if (w < 32 || h < 32 || lays.length === 0) {
+      maskByGen.clear();
+      highestGen = 0;
+      return;
+    }
+
+    const exp = safeExpansion(s);
+    const n = copyCount(exp);
+    const cell = gridCell(exp, w, h, n);
+    const pad = rasterPadding(exp, w, h, n);
+    const radius = baseRadiusCells(exp, cell, w, h, n);
+
+    const sig = `${layoutSig}|${n}|${cell}|${pad}|${radius}|${exp.ringSpacing}|${exp.offsetScale}|${exp.waveFlatten}|${exp.spacingMode}|${exp.spacingSpread}|${exp.edgeMode}`;
+    if (sig === chainSig && maskByGen.has(0) && highestGen >= n) return;
+
+    chainSig = sig;
+    flowPhase = 0;
+    flowHead = 0;
+    rebuildChain(s);
+  }
+
+  function drawShape0Text(fill: string | null, alpha: number, font: opentype.Font) {
     ctx.save();
     ctx.globalAlpha = alpha;
     for (const g of lays) {
-      const path = font.getPath(g.char, g.x, g.bl, fs);
+      const path = font.getPath(g.char, g.x, g.bl, layoutFontSize);
       if (fill) fillGlyphPath(ctx, path, fill);
       else {
         ctx.globalCompositeOperation = 'destination-out';
         fillGlyphPath(ctx, path, 'rgba(0,0,0,1)');
         ctx.globalCompositeOperation = 'source-over';
       }
-      strokeGlyphPath(ctx, path, col, lw);
     }
-    ctx.restore();
-  }
-
-  /** Бесконечный поток: окно колец [head+1 … head+window], как visibility в Cavalry. */
-  function drawFlowWindow(
-    s: ModeSnapshot,
-    head: number,
-    win: number,
-    col: string,
-    lw: number,
-    alpha: number,
-    fill: string | null,
-  ) {
-    if (!glyphMask || !advanceMask) return;
-
-    advanceToward(head, s, head + win + 8);
-
-    const opts = rippleOpts(s, head + win);
-    let m = new Uint8Array(advanceMask);
-
-    ctx.save();
-    ctx.translate(-gridPad, -gridPad);
-    ctx.globalCompositeOperation = 'source-over';
-
-    for (let vi = 0; vi < win; vi++) {
-      const gen = head + vi + 1;
-      if (maskHasInk(m)) {
-        drawMaskContourLayer(
-          ctx,
-          m,
-          gridCw,
-          gridCh,
-          gridCellPx,
-          fill,
-          col,
-          lw,
-          alpha,
-          segBuf,
-          fillScratch,
-        );
-      }
-      m = expandMaskGeneration(
-        m,
-        gen + 1,
-        gridCw,
-        gridCh,
-        buildRadius,
-        opts.waveFlatten,
-        opts.spacingMode,
-        opts.spacingSpread,
-        opts.edgeMode,
-        head + win,
-      );
-    }
-
     ctx.restore();
   }
 
@@ -362,56 +292,53 @@ export function createExpansionMode(
       if (w < 32 || h < 32) return;
 
       ensureLayout();
-      ensureRaster(s);
+      ensureChain(s);
       clearNeutral(ctx, w, h, s.visual.stageBackground);
 
-      if (!glyphMask || lays.length === 0) return;
+      const n = copyCount(safeExpansion(s));
+      if (!maskByGen.has(0) || highestGen < 1 || lays.length === 0) return;
 
       const exp = safeExpansion(s);
       const alpha = effectOpacity(s.visual);
-      const lw = Math.max(0.35, exp.strokeWidth ?? 1);
-      const fill = stageFill(s.visual.stageBackground);
-      const col = strokeColor(s);
+      const textFill = stageFill(s.visual.stageBackground);
       const anim = s.animationEnabled && !s.visual.sceneFrozen;
-      const win = windowSize(exp);
 
-      if (rasterSig !== flowSig) {
-        flowSig = rasterSig;
-        flowPhase = 0;
+      let firstGen = 1;
+      let lastGen = n;
+
+      if (anim) {
+        flowPhase += (exp.growSpeed ?? 0.55) * (gsap.ticker.deltaRatio() / 60) * FLOW_RATE;
+        const head = Math.floor(flowPhase);
+        if (head !== flowHead) {
+          flowHead = head;
+          ensureGeneration(s, flowHead + n);
+          gcBelow(flowHead - GC_MARGIN);
+        }
+        firstGen = flowHead + 1;
+        lastGen = flowHead + n;
+        ensureGeneration(s, lastGen);
       }
 
       ctx.save();
       ctx.globalCompositeOperation = 'source-over';
 
-      if (anim) {
-        flowPhase += (exp.growSpeed ?? 0.55) * (gsap.ticker.deltaRatio() / 60) * FLOW_RATE;
-        const head = Math.floor(flowPhase);
-        drawFlowWindow(s, head, win, col, lw, alpha, fill);
-      } else if (staticMasks.length > 1) {
-        const last = staticReady
-          ? staticMasks.length - 1
-          : Math.max(1, staticMasks.length - 1);
-        drawContourGenerationStack(
-          ctx,
-          staticMasks,
-          1,
-          last,
-          gridCw,
-          gridCh,
-          gridCellPx,
-          -gridPad,
-          -gridPad,
-          fill,
-          col,
-          lw,
-          alpha,
-          segBuf,
-          fillScratch,
-        );
-      }
+      drawFilledGenerationRange(
+        ctx,
+        (g) => maskByGen.get(g) ?? null,
+        firstGen,
+        lastGen,
+        gridCw,
+        gridCh,
+        gridCellPx,
+        -gridPad,
+        -gridPad,
+        (gen) => colorForGeneration(exp, gen),
+        alpha,
+        fillScratch,
+      );
 
       if (s.opentypeFont) {
-        drawShape0Text(s, col, lw, alpha, s.opentypeFont, fill);
+        drawShape0Text(textFill, alpha, s.opentypeFont);
       }
 
       ctx.restore();
@@ -423,17 +350,21 @@ export function createExpansionMode(
   return {
     start() {
       layoutSig = '';
-      rasterSig = '';
-      resetRasterState();
-      rebuild();
-      ensureRaster(getSnap());
+      chainSig = '';
+      maskByGen.clear();
+      highestGen = 0;
+      flowPhase = 0;
+      flowHead = 0;
+      expandBufA = null;
+      expandBufB = null;
+      rebuildLayout();
+      ensureChain(getSnap());
       tickerFn = () => tick();
       gsap.ticker.add(tickerFn);
     },
     stop() {
       if (tickerFn) gsap.ticker.remove(tickerFn);
       tickerFn = null;
-      buildGen++;
     },
     dispose() {
       this.stop();
