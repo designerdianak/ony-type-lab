@@ -37,7 +37,7 @@ function modeHint(mode: LabModeId): string {
     case 'elastic':
       return 'Градиентный поток от букв в заданном направлении';
     case 'trailWalker':
-      return 'Текст блуждает по экрану и оставляет цветной след';
+      return 'Offset-след за текстом — как Change Means Business (AGOF)';
     case 'softBody':
       return 'Непрерывный поток букв по полю; эхо-след';
     default:
@@ -854,6 +854,33 @@ export default function App() {
 
         {mode === 'trailWalker' && (
           <>
+            <div className="lab__field">
+              <span>След</span>
+              <div className="lab__row">
+                <RoundButton
+                  active={visual.trailWalker.trailMode === 'fade'}
+                  onClick={() =>
+                    setVisual((s) => ({
+                      ...s,
+                      trailWalker: { ...s.trailWalker, trailMode: 'fade' },
+                    }))
+                  }
+                >
+                  Затухание
+                </RoundButton>
+                <RoundButton
+                  active={visual.trailWalker.trailMode === 'copies'}
+                  onClick={() =>
+                    setVisual((s) => ({
+                      ...s,
+                      trailWalker: { ...s.trailWalker, trailMode: 'copies' },
+                    }))
+                  }
+                >
+                  Копии
+                </RoundButton>
+              </div>
+            </div>
             <LabeledSlider
               label="Скорость"
               min={0.05}
@@ -865,8 +892,8 @@ export default function App() {
               onChange={(v) => setVisual((s) => ({ ...s, trailWalker: { ...s.trailWalker, speed: v } }))}
             />
             <LabeledSlider
-              label="Длина следа"
-              min={4}
+              label={visual.trailWalker.trailMode === 'copies' ? 'Количество копий' : 'Длина следа'}
+              min={visual.trailWalker.trailMode === 'copies' ? 1 : 4}
               max={120}
               freeInput
               value={visual.trailWalker.trailLength}

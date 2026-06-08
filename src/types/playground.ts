@@ -107,12 +107,16 @@ export interface ElasticSettings {
   colorC: string;
 }
 
+/** fade — след затухает по прозрачности; copies — фиксированное число offset-копий. */
+export type TrailWalkerTrailMode = 'fade' | 'copies';
+
 /** Блуждающий текст со следом. */
 export interface TrailWalkerSettings {
   speed: number;
   trailLength: number;
   worminess: number;
   trailColor: string;
+  trailMode: TrailWalkerTrailMode;
 }
 
 export interface SoftBodySettings {
@@ -219,10 +223,11 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
     colorC: '#00c8ff',
   },
   trailWalker: {
-    speed: 0.42,
-    trailLength: 36,
-    worminess: 0.35,
+    speed: 0.58,
+    trailLength: 96,
+    worminess: 0.28,
     trailColor: '#e91e8c',
+    trailMode: 'copies',
   },
   softBody: {
     overlap: true,
