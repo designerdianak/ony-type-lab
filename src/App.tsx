@@ -4,6 +4,7 @@ import { useFontLoader } from './hooks/useFontLoader';
 import { useOpenTypeFont } from './hooks/useOpenTypeFont';
 import {
   DEFAULT_PLAYGROUND_VISUAL,
+  resolveElasticGradientFill,
   LAB_MODES,
   type LabModeId,
   type PlaygroundVisualState,
@@ -801,33 +802,6 @@ export default function App() {
               value={visual.elastic.directionDeg}
               onChange={(v) => setVisual((s) => ({ ...s, elastic: { ...s.elastic, directionDeg: v } }))}
             />
-            <div className="lab__field">
-              <span>Градиент шлейфа</span>
-              <div className="lab__row">
-                <RoundButton
-                  active={(visual.elastic.trailGradientMode ?? 'striped') === 'striped'}
-                  onClick={() =>
-                    setVisual((s) => ({
-                      ...s,
-                      elastic: { ...s.elastic, trailGradientMode: 'striped' },
-                    }))
-                  }
-                >
-                  Полосатый
-                </RoundButton>
-                <RoundButton
-                  active={visual.elastic.trailGradientMode === 'smooth'}
-                  onClick={() =>
-                    setVisual((s) => ({
-                      ...s,
-                      elastic: { ...s.elastic, trailGradientMode: 'smooth' },
-                    }))
-                  }
-                >
-                  Плавный
-                </RoundButton>
-              </div>
-            </div>
             <LabeledSlider
               label="Шаг смещения"
               min={0.1}
@@ -838,6 +812,102 @@ export default function App() {
               format={(n) => n.toFixed(2)}
               onChange={(v) => setVisual((s) => ({ ...s, elastic: { ...s.elastic, stepSize: v } }))}
             />
+            <div className="lab__field">
+              <span>Градиент</span>
+              <div className="lab__row">
+                <RoundButton
+                  active={resolveElasticGradientFill(visual.elastic) === 'smooth'}
+                  onClick={() =>
+                    setVisual((s) => ({
+                      ...s,
+                      elastic: {
+                        ...s.elastic,
+                        gradientFill: 'smooth',
+                        smoothColors:
+                          s.elastic.smoothColors?.length >= 2
+                            ? s.elastic.smoothColors
+                            : [s.elastic.colorA, s.elastic.colorB, s.elastic.colorC],
+                      },
+                    }))
+                  }
+                >
+                  Плавный
+                </RoundButton>
+                <RoundButton
+                  active={resolveElasticGradientFill(visual.elastic) === 'choppy'}
+                  onClick={() =>
+                    setVisual((s) => ({
+                      ...s,
+                      elastic: { ...s.elastic, gradientFill: 'choppy' },
+                    }))
+                  }
+                >
+                  Рубленный
+                </RoundButton>
+              </div>
+            </div>
+            {resolveElasticGradientFill(visual.elastic) === 'smooth' &&
+              (() => {
+                const flowSmoothColors =
+                  visual.elastic.smoothColors?.length >= 2
+                    ? visual.elastic.smoothColors
+                    : [visual.elastic.colorA, visual.elastic.colorB, visual.elastic.colorC];
+                return (
+                  <>
+                    {flowSmoothColors.map((c, i) => (
+                      <div key={i} className="lab__field lab__field--row">
+                        <label htmlFor={`flow-smooth-${i}`}>
+                          {i === 0 ? 'Цвет A' : i === 1 ? 'B' : i === 2 ? 'C' : `#${i + 1}`}
+                        </label>
+                        <input
+                          id={`flow-smooth-${i}`}
+                          type="color"
+                          value={c}
+                          onChange={(e) =>
+                            setVisual((s) => {
+                              const base = [...flowSmoothColors];
+                              base[i] = e.target.value;
+                              return { ...s, elastic: { ...s.elastic, smoothColors: base } };
+                            })
+                          }
+                        />
+                        <RoundButton
+                          active={false}
+                          disabled={flowSmoothColors.length <= 2}
+                          onClick={() =>
+                            setVisual((s) => ({
+                              ...s,
+                              elastic: {
+                                ...s.elastic,
+                                smoothColors: flowSmoothColors.filter((_, j) => j !== i),
+                              },
+                            }))
+                          }
+                        >
+                          ×
+                        </RoundButton>
+                      </div>
+                    ))}
+                    <RoundButton
+                      active={false}
+                      onClick={() =>
+                        setVisual((s) => ({
+                          ...s,
+                          elastic: {
+                            ...s.elastic,
+                            smoothColors: [
+                              ...flowSmoothColors,
+                              flowSmoothColors[flowSmoothColors.length - 1] ?? '#00c8ff',
+                            ],
+                          },
+                        }))
+                      }
+                    >
+                      + цвет
+                    </RoundButton>
+                  </>
+                );
+              })()}
             <LabeledSlider
               label="Скорость градиента"
               min={0}
@@ -848,102 +918,6 @@ export default function App() {
               format={(n) => n.toFixed(2)}
               onChange={(v) => setVisual((s) => ({ ...s, elastic: { ...s.elastic, flowSpeed: v } }))}
             />
-            <RoundToggle
-              label="Случайный градиент"
-              pressed={visual.elastic.randomGradient}
-              onChange={(v) => setVisual((s) => ({ ...s, elastic: { ...s.elastic, randomGradient: v } }))}
-            />
-            {!visual.elastic.randomGradient &&
-              (visual.elastic.trailGradientMode ?? 'striped') === 'striped' && (
-                <div className="lab__field lab__field--row">
-                  <label htmlFor="g-a">Цвет A</label>
-                  <input
-                    id="g-a"
-                    type="color"
-                    value={visual.elastic.colorA}
-                    onChange={(e) =>
-                      setVisual((s) => ({ ...s, elastic: { ...s.elastic, colorA: e.target.value } }))
-                    }
-                  />
-                  <label htmlFor="g-b">B</label>
-                  <input
-                    id="g-b"
-                    type="color"
-                    value={visual.elastic.colorB}
-                    onChange={(e) =>
-                      setVisual((s) => ({ ...s, elastic: { ...s.elastic, colorB: e.target.value } }))
-                    }
-                  />
-                  <label htmlFor="g-c">C</label>
-                  <input
-                    id="g-c"
-                    type="color"
-                    value={visual.elastic.colorC}
-                    onChange={(e) =>
-                      setVisual((s) => ({ ...s, elastic: { ...s.elastic, colorC: e.target.value } }))
-                    }
-                  />
-                </div>
-              )}
-            {!visual.elastic.randomGradient && visual.elastic.trailGradientMode === 'smooth' && (() => {
-              const flowSmoothColors =
-                visual.elastic.smoothColors?.length >= 2
-                  ? visual.elastic.smoothColors
-                  : [visual.elastic.colorA, visual.elastic.colorB];
-              return (
-                <>
-                  {flowSmoothColors.map((c, i) => (
-                    <div key={i} className="lab__field lab__field--row">
-                      <label htmlFor={`flow-smooth-${i}`}>#{i + 1}</label>
-                      <input
-                        id={`flow-smooth-${i}`}
-                        type="color"
-                        value={c}
-                        onChange={(e) =>
-                          setVisual((s) => {
-                            const base = [...flowSmoothColors];
-                            base[i] = e.target.value;
-                            return { ...s, elastic: { ...s.elastic, smoothColors: base } };
-                          })
-                        }
-                      />
-                      <RoundButton
-                        active={false}
-                        disabled={flowSmoothColors.length <= 2}
-                        onClick={() =>
-                          setVisual((s) => ({
-                            ...s,
-                            elastic: {
-                              ...s.elastic,
-                              smoothColors: flowSmoothColors.filter((_, j) => j !== i),
-                            },
-                          }))
-                        }
-                      >
-                        ×
-                      </RoundButton>
-                    </div>
-                  ))}
-                  <RoundButton
-                    active={false}
-                    onClick={() =>
-                      setVisual((s) => ({
-                        ...s,
-                        elastic: {
-                          ...s.elastic,
-                          smoothColors: [
-                            ...flowSmoothColors,
-                            flowSmoothColors[flowSmoothColors.length - 1] ?? '#00c8ff',
-                          ],
-                        },
-                      }))
-                    }
-                  >
-                    + цвет
-                  </RoundButton>
-                </>
-              );
-            })()}
           </>
         )}
 

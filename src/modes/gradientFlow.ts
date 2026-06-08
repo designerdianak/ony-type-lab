@@ -3,7 +3,6 @@ import type { Paths } from 'js-angusj-clipper';
 import {
   colorForGlyph,
   gradientAt,
-  hsla,
   mulberry32,
   randomVividPalette,
 } from '../utils/colors';
@@ -17,6 +16,7 @@ import {
   pathsBoundsCenter,
   pathsToPath2D,
 } from '../utils/vectorOffset';
+import { resolveElasticGradientFill } from '../types/playground';
 import { effectOpacity } from '../utils/visualAlpha';
 import type { ModeController, ModeSnapshot } from './types';
 
@@ -67,20 +67,16 @@ export function createGradientFlowMode(
   let textKey = '';
   let textReady = false;
 
-  function palette(s: ModeSnapshot): string[] {
-    const e = s.visual.elastic;
-    if (e.randomGradient) {
-      const rng = mulberry32(Math.floor(s.visual.rainbowSeed * 1000));
-      return randomVividPalette(rng() * 1000, 6);
-    }
-    return [e.colorA, e.colorB, e.colorC];
+  function choppyPalette(s: ModeSnapshot): string[] {
+    const rng = mulberry32(Math.floor(s.visual.rainbowSeed * 1000));
+    return randomVividPalette(rng() * 1000, 6);
   }
 
   function smoothPalette(s: ModeSnapshot): string[] {
     const e = s.visual.elastic;
     const custom = e.smoothColors;
     if (custom && custom.length >= 2) return custom;
-    return [e.colorA, e.colorB];
+    return [e.colorA, e.colorB, e.colorC];
   }
 
   function rebuildLines(s: ModeSnapshot) {
@@ -122,8 +118,7 @@ export function createGradientFlowMode(
       e.directionDeg,
       e.stepSize,
       e.flowSpeed,
-      e.trailGradientMode ?? 'striped',
-      e.randomGradient,
+      resolveElasticGradientFill(e),
       (e.smoothColors ?? []).join(','),
       e.colorA,
       e.colorB,
@@ -167,20 +162,8 @@ export function createGradientFlowMode(
     };
   }
 
-  function trailColorAt(s: ModeSnapshot, t: number): string {
-    const e = s.visual.elastic;
-    const pal = palette(s);
-    if (e.randomGradient) return gradientAt(pal, t);
-    if (s.visual.colorMode === 'rainbow') {
-      return colorForGlyph({
-        mode: 'rainbow',
-        monochrome: s.visual.monochromeColor,
-        seed: s.visual.rainbowSeed,
-        index: Math.floor(t * 48),
-        total: 48,
-      });
-    }
-    return gradientAt([e.colorA, e.colorB, e.colorC], t);
+  function choppyTrailColor(s: ModeSnapshot, t: number): string {
+    return gradientAt(choppyPalette(s), t);
   }
 
   function layerCount(s: ModeSnapshot): number {
@@ -200,13 +183,7 @@ export function createGradientFlowMode(
 
   /** Цвет по глубине шлейфа (0 = у текста, 1 = хвост). */
   function smoothTrailColor(s: ModeSnapshot, t: number): string {
-    const e = s.visual.elastic;
     const u = t - Math.floor(t);
-    if (e.randomGradient) return gradientAt(palette(s), u);
-    if (s.visual.colorMode === 'rainbow') {
-      const h = (s.visual.rainbowSeed * 41 + u * 360) % 360;
-      return hsla(h, 90, 54, 1);
-    }
     return gradientAt(smoothPalette(s), u);
   }
 
@@ -245,7 +222,7 @@ export function createGradientFlowMode(
         const depth = i / layers;
         const tRaw = (depth + phase) % 1;
         const t = Math.floor(tRaw * bands) / bands;
-        const fill = trailColorAt(s, t);
+        const fill = choppyTrailColor(s, t);
 
         trailCtx!.save();
         trailCtx!.globalAlpha = alpha;
@@ -297,11 +274,11 @@ export function createGradientFlowMode(
 
   function paintTrail(s: ModeSnapshot, phase: number, alpha: number, w: number, h: number, animating: boolean) {
     const e = s.visual.elastic;
-    const pal = palette(s);
-    const mode = e.trailGradientMode ?? 'striped';
+    const fillMode = resolveElasticGradientFill(e);
+    const pal = fillMode === 'choppy' ? choppyPalette(s) : smoothPalette(s);
     const layers = layerCount(s);
     const { tx, ty } = trailStep(s);
-    const key = `${layoutSig}|${mode}|${layers}|${e.directionDeg}|${e.stepSize}|${pal.join(',')}|${phase.toFixed(3)}|${alpha}|${s.visual.colorMode}`;
+    const key = `${layoutSig}|${fillMode}|${layers}|${e.directionDeg}|${e.stepSize}|${pal.join(',')}|${phase.toFixed(4)}|${alpha}`;
 
     if (!animating && trailReady && key === trailKey && trailLayer.width > 0) {
       return;
@@ -309,9 +286,9 @@ export function createGradientFlowMode(
     if (!trailCtx) return;
 
     trailKey = key;
-    trailReady = true;
+    trailReady = !animating;
 
-    if (mode === 'smooth') {
+    if (fillMode === 'smooth') {
       setupSurface(trailLayer, trailCtx, w, h);
       trailCtx.clearRect(0, 0, w, h);
       paintTrailSmooth(s, phase, alpha, layers, tx, ty, w, h);
@@ -371,7 +348,9 @@ export function createGradientFlowMode(
     const animating = s.visual.animationEnabled && !s.visual.sceneFrozen && lines.length > 0;
 
     if (animating) {
-      flowPhase += s.visual.elastic.flowSpeed * (gsap.ticker.deltaRatio() / 60);
+      const speed = s.visual.elastic.flowSpeed ?? 0.45;
+      flowPhase += speed * (gsap.ticker.deltaRatio() / 60);
+      if (!Number.isFinite(flowPhase)) flowPhase = 0;
     }
 
     if (lines.length > 0) {

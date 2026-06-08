@@ -96,8 +96,8 @@ export interface SymbolSettings {
   swapEveryFrames: number;
 }
 
-/** Полосатый — дискретные полосы; smooth — непрерывный перелив. */
-export type ElasticTrailGradientMode = 'striped' | 'smooth';
+/** Плавный — растяжка между заданными цветами; рубленный — случайная палитра полосами. */
+export type ElasticGradientFill = 'smooth' | 'choppy';
 
 /** Градиентный поток от букв. */
 export interface ElasticSettings {
@@ -106,13 +106,23 @@ export interface ElasticSettings {
   stepSize: number;
   /** Скорость перетекания градиента по шлейфу. */
   flowSpeed: number;
-  trailGradientMode: ElasticTrailGradientMode;
-  randomGradient: boolean;
+  gradientFill: ElasticGradientFill;
   /** Плавный шлейф: минимум 2, равномерная растяжка между соседними. */
   smoothColors: string[];
+  /** @deprecated миграция со старых пресетов */
+  trailGradientMode?: 'striped' | 'smooth';
+  /** @deprecated миграция со старых пресетов */
+  randomGradient?: boolean;
   colorA: string;
   colorB: string;
   colorC: string;
+}
+
+export function resolveElasticGradientFill(e: ElasticSettings): ElasticGradientFill {
+  if (e.gradientFill === 'smooth' || e.gradientFill === 'choppy') return e.gradientFill;
+  if (e.trailGradientMode === 'smooth') return 'smooth';
+  if (e.randomGradient) return 'choppy';
+  return 'smooth';
 }
 
 /** fade — след затухает по прозрачности; copies — фиксированное число offset-копий. */
@@ -232,9 +242,8 @@ export const DEFAULT_PLAYGROUND_VISUAL: PlaygroundVisualState = {
     directionDeg: 90,
     stepSize: 0.55,
     flowSpeed: 0.45,
-    trailGradientMode: 'striped',
-    randomGradient: true,
-    smoothColors: ['#ff2bd6', '#6b2cff'],
+    gradientFill: 'choppy',
+    smoothColors: ['#ff2bd6', '#6b2cff', '#00c8ff'],
     colorA: '#ff2bd6',
     colorB: '#6b2cff',
     colorC: '#00c8ff',
