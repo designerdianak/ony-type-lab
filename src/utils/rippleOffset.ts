@@ -4,6 +4,9 @@ import { smoothBinaryMask } from './iterativeContours';
 /** Скорость бесконечного потока — фиксирована. */
 export const RIPPLE_FLOW_SPEED = 0.4;
 
+/** Доля шага offset, на которую смещается позиция кольца при bias = ±1. */
+export const RIPPLE_BIAS_SHIFT = 0.78;
+
 const SMOOTH_THRESHOLD = 0.42;
 const BIAS_STRENGTH = 0.85;
 

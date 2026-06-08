@@ -391,7 +391,7 @@ export default function App() {
               />
             )}
             <LabeledSlider
-              label="Horizontal bias"
+              label="Смещение X"
               min={-1}
               max={1}
               step={0.05}
@@ -402,7 +402,7 @@ export default function App() {
               }
             />
             <LabeledSlider
-              label="Vertical bias"
+              label="Смещение Y"
               min={-1}
               max={1}
               step={0.05}

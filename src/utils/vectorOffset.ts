@@ -170,14 +170,11 @@ export function pathsBoundsCenter(paths: Paths): { cx: number; cy: number } {
   return { cx: (minX + maxX) * 0.5, cy: (minY + maxY) * 0.5 };
 }
 
-function scalePathsAbout(paths: Paths, cx: number, cy: number, sx: number, sy: number): Paths {
-  return paths.map((path) =>
-    path.map((p) => {
-      const x = p.x / CLIPPER_SCALE;
-      const y = p.y / CLIPPER_SCALE;
-      return toInt((x - cx) * sx + cx, (y - cy) * sy + cy);
-    }),
-  );
+export function translatePaths(paths: Paths, dxPx: number, dyPx: number): Paths {
+  if (dxPx === 0 && dyPx === 0) return paths;
+  const dx = Math.round(dxPx * CLIPPER_SCALE);
+  const dy = Math.round(dyPx * CLIPPER_SCALE);
+  return paths.map((path) => path.map((p) => ({ x: p.x + dx, y: p.y + dy })));
 }
 
 /** Силуэт всего слова — union контуров букв (Shape0). */
@@ -205,24 +202,13 @@ export function buildTextSilhouette(
   });
 }
 
-/** Shapeₙ = Offset(Shapeₙ₋₁) — векторный path offset (Clipper). */
+/** Shapeₙ = Offset(Shapeₙ₋₁) — равномерный векторный offset (Clipper). */
 export function offsetPaths(
   clipper: ClipperLibWrapper,
   prev: Paths,
   deltaPx: number,
-  biasX: number,
-  biasY: number,
-  center: { cx: number; cy: number },
 ): Paths {
   if (prev.length === 0 || deltaPx <= 0) return [];
-
-  const bx = Math.max(-1, Math.min(1, biasX));
-  const by = Math.max(-1, Math.min(1, biasY));
-  const sx = 1 + bx * 0.82;
-  const sy = 1 + by * 0.82;
-
-  const scaled =
-    sx === 1 && sy === 1 ? prev : scalePathsAbout(prev, center.cx, center.cy, sx, sy);
 
   const result = clipper.offsetToPaths({
     delta: deltaPx * CLIPPER_SCALE,
@@ -231,15 +217,34 @@ export function offsetPaths(
       {
         joinType: JoinType.Round,
         endType: EndType.ClosedPolygon,
-        data: scaled,
+        data: prev,
       },
     ],
   });
 
-  if (!result || result.length === 0) return [];
+  return result?.length ? result : [];
+}
 
-  if (sx === 1 && sy === 1) return result;
-  return scalePathsAbout(result, center.cx, center.cy, 1 / sx, 1 / sy);
+/**
+ * Offset + сдвиг позиции кольца по bias (текст не двигается).
+ * bias ∈ [-1, 1] — направление накопительного смещения контуров.
+ */
+export function offsetPathsWithBias(
+  clipper: ClipperLibWrapper,
+  prev: Paths,
+  deltaPx: number,
+  biasX: number,
+  biasY: number,
+  biasShift: number,
+): Paths {
+  const result = offsetPaths(clipper, prev, deltaPx);
+  if (!result.length) return [];
+
+  const bx = Math.max(-1, Math.min(1, biasX));
+  const by = Math.max(-1, Math.min(1, biasY));
+  if (bx === 0 && by === 0) return result;
+
+  return translatePaths(result, bx * deltaPx * biasShift, by * deltaPx * biasShift);
 }
 
 export function pathsToPath2D(paths: Paths): Path2D {

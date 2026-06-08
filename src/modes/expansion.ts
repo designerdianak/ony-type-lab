@@ -6,6 +6,7 @@ import { clearNeutral } from '../utils/canvas';
 import { fillGlyphPath } from '../utils/opentypeCanvas';
 import {
   normalizeExpansion,
+  RIPPLE_BIAS_SHIFT,
   RIPPLE_FLOW_SPEED,
   rippleReach,
   rippleRingFillColor,
@@ -19,7 +20,7 @@ import {
   drawVectorRippleCarousel,
   getVectorClipper,
   initVectorClipper,
-  offsetPaths,
+  offsetPathsWithBias,
   pathsBoundsCenter,
   pathsToPath2D,
   shapeMaxRadius,
@@ -135,13 +136,14 @@ export function createExpansionMode(
   ): Paths {
     const clipper = getVectorClipper();
     if (!clipper) return [];
-    return offsetPaths(
+    const delta = stepPx(exp, gen, w, h, count);
+    return offsetPathsWithBias(
       clipper,
       prev,
-      stepPx(exp, gen, w, h, count),
+      delta,
       exp.horizontalBias,
       exp.verticalBias,
-      shapeCenter,
+      RIPPLE_BIAS_SHIFT,
     );
   }
 

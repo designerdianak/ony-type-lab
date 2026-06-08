@@ -54,7 +54,9 @@ export interface ExpansionSettings {
   /** обводка (contourFill) или второй цвет заливки (alternatingFill) */
   strokeColor: string;
   customPalette: string[];
+  /** Смещение позиции контуров по X за каждое кольцо, −1…1 */
   horizontalBias: number;
+  /** Смещение позиции контуров по Y за каждое кольцо, −1…1 */
   verticalBias: number;
   strokeWidth: number;
 }
